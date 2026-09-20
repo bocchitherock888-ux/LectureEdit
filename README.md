@@ -30,7 +30,7 @@ LectureEdit 是一款以本地语音识别为主的课堂录音与转写桌面�
 | 平台 | 当前状态 |
 |---|---|
 | macOS 13 及以上，Apple Silicon | 提供 DMG / ZIP 测试版安装包。 |
-| Windows x64，Intel / AMD 64 位电脑 | 已提供构建流程，安装包及真实设备验收待完成。发布进展见 Releases。 |
+| Windows x64，Intel / AMD 64 位电脑 | 提供未签名 NSIS 测试安装包。真实设备录音与转写验收待完成。 |
 
 Mac 用户从 [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases) 下载对应安装包，将 LectureEdit 放入“应用程序”后打开。当前 Mac 构建采用临时签名，尚未经过 Apple 公证；确认下载来源后，可按系统提示在“系统设置 → 隐私与安全性”中允许打开。
 

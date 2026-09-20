@@ -30,7 +30,7 @@ The current version is **0.1.0 beta**.
 | Platform | Status |
 |---|---|
 | macOS 13 or later, Apple Silicon | Beta builds provided as DMG and ZIP packages. |
-| Windows x64, 64-bit Intel / AMD PCs | Build instructions and automation are available. Installer and hardware acceptance testing are pending. See Releases for updates. |
+| Windows x64, 64-bit Intel / AMD PCs | Unsigned NSIS beta installer provided. Live recording and transcription on a real PC are still pending. |
 
 For Mac, download the appropriate package from [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases), move LectureEdit to Applications and open it. The current Mac build is ad-hoc signed and awaits Apple notarisation. After checking the download source, follow the system prompt under System Settings → Privacy & Security to allow it to open.
 
