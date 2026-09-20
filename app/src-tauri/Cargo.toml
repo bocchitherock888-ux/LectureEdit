@@ -1,0 +1,45 @@
+[package]
+name = "lectureedit"
+default-run = "lectureedit"
+version = "0.1.0"
+edition = "2021"
+description = "Local lecture recording and live correction"
+license = "MIT"
+[lib]
+name = "lectureedit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+lectureedit-merge = { path = "../../spikes/domain-rs" }
+unicode-segmentation = "1"
+cpal = "0.16"
+hound = "3.5"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+base64 = "0.22"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+crossbeam-channel = "0.5"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["apple-native"] }
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+objc2-web-kit = "0.3"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFData", "CFCGTypes"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGContext", "CGDataConsumer", "CGDataProvider", "CGPDFContext", "CGPDFDocument", "CGPDFPage"] }
+block2 = "0.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+
+[dev-dependencies]
+tempfile = "3"

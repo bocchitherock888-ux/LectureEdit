@@ -1,0 +1,12 @@
+* text=auto
+*.png binary
+*.jpg binary
+*.icns binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+docs/** linguist-documentation=true
+design/** linguist-documentation=true
+contracts/** linguist-documentation=true
+*.md linguist-documentation=true

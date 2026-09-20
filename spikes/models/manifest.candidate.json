@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "manifest_id": "qwen3-asr-0.6b-q8-candidate",
+  "verification_status": "files_identified_hashes_from_huggingface_lfs_not_runtime_tested",
+  "upstream_model": "Qwen/Qwen3-ASR-0.6B",
+  "runtime": "llama.cpp",
+  "runtime_tag_candidate": "v0.4.1",
+  "runtime_commit_candidate": "391fac16460f15233a7740550d858ac96df3419d",
+  "runtime_asr_support_merged": {
+    "pr": "https://github.com/ggml-org/llama.cpp/pull/19441",
+    "merge_commit": "21a493304229be58de148fde3b633017db0a0524",
+    "date": "2026-04-12",
+    "note": "Do not freeze here. Later transcription bug required a follow-up."
+  },
+  "runtime_asr_fix": {
+    "pr": "https://github.com/ggml-org/llama.cpp/pull/23073",
+    "commit": "72e60f5",
+    "issue": "https://github.com/ggml-org/llama.cpp/issues/22357",
+    "note": "mtmd: add chunks and fix preproc for qwen3a. Freeze candidate must be this commit or later. v0.4.1 is later."
+  },
+  "model_repository": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+  "model_repository_commit": "928ab958557df9aa2ef1c93e0e83c7ad0933fae2",
+  "model_repository_url": "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/tree/main",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "role": "decoder",
+      "name": "Qwen3-ASR-0.6B-Q8_0.gguf",
+      "url": "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/Qwen3-ASR-0.6B-Q8_0.gguf",
+      "approximate_bytes_from_listing": 805000000,
+      "exact_bytes": 804749248,
+      "sha256": "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+      "sha256_source": "Hugging Face LFS oid / X-Linked-ETag on 2026-09-18"
+    },
+    {
+      "role": "audio_projector",
+      "name": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+      "url": "https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF/resolve/main/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+      "approximate_bytes_from_listing": 214000000,
+      "exact_bytes": 214392480,
+      "sha256": "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+      "sha256_source": "Hugging Face LFS oid on 2026-09-18"
+    }
+  ],
+  "pair_total_bytes": 1019141728,
+  "pair_total_decimal_gb": 1.019,
+  "whisper_fallback_candidate": {
+    "runtime": "whisper.cpp",
+    "model": "ggml-base.en.bin",
+    "role": "low-resource English fallback, not the Qwen pair",
+    "download_script": "vendor/whisper.cpp/models/download-ggml-model.sh base.en",
+    "verification_status": "not_downloaded"
+  },
+  "tested_platforms": [],
+  "release_allowed": false,
+  "note": "Hashes identify the files to download. They do not prove transcription quality on this Mac. Release must stay false until G0 speech tests pass."
+}

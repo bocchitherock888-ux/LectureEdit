@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "manifest_id": "whisper-cpp-base-en-candidate",
+  "verification_status": "downloaded_not_speech_tested",
+  "runtime": "whisper.cpp",
+  "runtime_commit": "5670d5c0bbcb148feabef84400a07cfca9aa3b30",
+  "binary": "~/.cache/lectureedit/builds/whisper.cpp/bin/whisper-cli",
+  "files": [
+    {
+      "role": "weights",
+      "name": "ggml-base.en.bin",
+      "source": "https://huggingface.co/ggerganov/whisper.cpp",
+      "exact_bytes": 147964211,
+      "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+    }
+  ],
+  "release_allowed": false,
+  "note": "Low-resource English fallback. Hash is of the downloaded file on this Mac. Accuracy not_run."
+}

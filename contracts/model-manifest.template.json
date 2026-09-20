@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "manifest_id": "qwen3-asr-0.6b-q8-candidate",
+  "verification_status": "unverified",
+  "upstream_model": "Qwen/Qwen3-ASR-0.6B",
+  "runtime": "llama.cpp",
+  "runtime_commit": null,
+  "model_repository": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+  "model_repository_commit": null,
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "role": "decoder",
+      "name": "Qwen3-ASR-0.6B-Q8_0.gguf",
+      "approximate_bytes_from_listing": 805000000,
+      "exact_bytes": null,
+      "sha256": null
+    },
+    {
+      "role": "audio_projector",
+      "name": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+      "approximate_bytes_from_listing": 214000000,
+      "exact_bytes": null,
+      "sha256": null
+    }
+  ],
+  "tested_platforms": [],
+  "release_allowed": false,
+  "note": "Fill verified exact sizes, full commits and SHA-256 during G0. Release must reject placeholders."
+}

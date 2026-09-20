@@ -1,0 +1,29 @@
+/* Product proposals, not copied brand tokens. System fonts only. */
+:root {
+  --color-app: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-text: #232323;
+  --color-muted: #73716d;
+  --color-border: #e7e5e1;
+  --color-accent: #3c6e71;
+  --color-edit-bg: #f0f5f3;
+  --color-review-bg: #fff5df;
+  --color-review-text: #765214;
+  --color-recording: #a82e32;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-code: ui-monospace, "Cascadia Code", "SFMono-Regular", monospace;
+  --text-body: 17px;
+  --line-body: 1.65;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px;
+  --space-4: 16px; --space-6: 24px; --space-8: 32px;
+  --radius-control: 8px; --radius-panel: 12px;
+  --editor-width: 380px; --reader-max-width: 740px;
+  --motion-fast: 100ms; --motion-panel: 180ms;
+  --motion-feedback: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 0ms; --motion-panel: 0ms; --motion-feedback: 0ms; }
+  html { scroll-behavior: auto; }
+}
+/* Components must explicitly consume these tokens and avoid token-by-token animation. */

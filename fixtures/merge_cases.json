@@ -1,0 +1,34 @@
+[
+  {
+    "name": "term_and_suffix",
+    "base": "According to Talmey, Path is encoded",
+    "user": "According to Talmy, Path is encoded",
+    "machine": "According to Talmey, Path is encoded in the verb.",
+    "expected": "According to Talmy, Path is encoded in the verb.",
+    "conflict": false
+  },
+  {
+    "name": "number_conflict",
+    "base": "It is fifteen percent.",
+    "user": "It is fifty percent.",
+    "machine": "It is sixteen percent. More follows.",
+    "expected": "It is fifty percent.",
+    "conflict": true
+  },
+  {
+    "name": "repeat_ambiguity",
+    "base": "path links path",
+    "user": "Path links path",
+    "machine": "path links path today",
+    "expected": "Path links path",
+    "conflict": true
+  },
+  {
+    "name": "chinese_suffix",
+    "base": "他研究路径",
+    "user": "她研究路径",
+    "machine": "他研究路径编码",
+    "expected": "她研究路径编码",
+    "conflict": false
+  }
+]

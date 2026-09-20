@@ -1,0 +1,39 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Python reference tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Merge crate tests
+        run: cargo test --manifest-path spikes/domain-rs/Cargo.toml --locked
+      - name: Frontend tests
+        working-directory: app
+        run: |
+          npm ci
+          npm test

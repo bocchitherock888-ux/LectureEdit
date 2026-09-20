@@ -1,0 +1,15 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+
+.native-build/
+.playwright-cli/
+output/
+src-tauri/resources/native/
+native/bin/
+native/macos-system-audio/bin/
+native/windows-loopback/target/
+tsconfig.tsbuildinfo
+src-tauri/resources/licenses/

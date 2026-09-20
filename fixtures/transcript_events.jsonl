@@ -1,0 +1,10 @@
+{"at_ms": 0, "type": "simulation_started", "notice": "Fixed transcript data; no audio capture"}
+{"at_ms": 2000, "type": "machine_snapshot", "segment_id": "s1", "revision": 1, "text": "According to Talmey, Path is encoded", "final": false}
+{"at_ms": 2800, "type": "begin_edit", "segment_id": "s1"}
+{"at_ms": 3400, "type": "draft", "text": "According to Talmy, Path is encoded"}
+{"at_ms": 4000, "type": "machine_snapshot", "segment_id": "s2", "revision": 1, "text": "The next example concerns English.", "final": false}
+{"at_ms": 4300, "type": "machine_snapshot", "segment_id": "s1", "revision": 2, "text": "According to Talmey, Path is encoded in the verb.", "final": false}
+{"at_ms": 5000, "type": "commit_edit", "command_id": "save-1"}
+{"at_ms": 5400, "type": "add_formula", "anchor_segment_id": "s1", "latex": "P(A\\mid B)=P(A\\cap B)/P(B)"}
+{"at_ms": 6000, "type": "machine_snapshot", "segment_id": "s1", "revision": 3, "text": "According to Chomsky, Path is encoded in the verb.", "final": true}
+{"at_ms": 6500, "type": "expect_pending", "human_contains": "Talmy", "machine_contains": "Chomsky", "visible_suffix": "in the verb."}

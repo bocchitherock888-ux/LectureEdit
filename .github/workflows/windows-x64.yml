@@ -1,0 +1,88 @@
+name: Windows x64 installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      cpu_profile:
+        description: CPU build profile (multi recommended)
+        type: choice
+        options: [multi, baseline]
+        default: multi
+      offline_webview2:
+        description: Bundle the WebView2 offline installer (model weights remain separate)
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-x64-${{ github.ref }}-${{ inputs.cpu_profile || 'multi' }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          architecture: x64
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Cache fetched sources (no native binary cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/.native-build/source/llama
+          key: windows-x64-sources-rust192-391fac1-${{ hashFiles('**/Cargo.lock') }}
+      - name: Parse all build scripts before running them
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem app/scripts,app/native -Filter *.ps1 -Recurse)
+          foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName,[ref]$tokens,[ref]$errors)
+            if ($errors.Count) { throw "$($file.FullName): $($errors | Out-String)" }
+          }
+      - name: Build, test and collect the unsigned x64 installer
+        env:
+          CPU_PROFILE: ${{ inputs.cpu_profile || 'multi' }}
+          OFFLINE_WEBVIEW2: ${{ inputs.offline_webview2 || false }}
+        run: |
+          ./app/scripts/windows/Build-Windows.ps1 -CpuProfile $env:CPU_PROFILE -Jobs 2 -OfflineWebView2:($env:OFFLINE_WEBVIEW2 -eq 'true')
+      - name: Upload installer, hashes and exact build report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureEdit-windows-x64-${{ inputs.cpu_profile || 'multi' }}-${{ github.run_number }}
+          path: .windows-output/**
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload diagnostics even after a failed build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureEdit-windows-x64-diagnostics-${{ github.run_number }}
+          path: |
+            .windows-build/logs/**
+            .windows-output/**/BUILD-INFO.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
