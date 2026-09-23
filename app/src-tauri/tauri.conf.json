@@ -29,7 +29,8 @@
     "category": "Education",
     "shortDescription": "Record lectures and revise transcripts as you listen",
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "entitlements": "Entitlements.plist"
     },
     "icon": [
       "icons/32x32.png",

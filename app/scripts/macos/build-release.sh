@@ -12,6 +12,12 @@ lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 
 APPLE_SIGNING_IDENTITY="${APPLE_SIGNING_IDENTITY:--}" npm run tauri build -- --bundles app,dmg
 
+# Without this entitlement the hardened runtime records silence from the microphone.
+if ! codesign -d --entitlements - "$bundle/macos/LectureEdit.app" 2>/dev/null | grep -q device.audio-input; then
+  echo "error: LectureEdit.app is missing com.apple.security.device.audio-input" >&2
+  exit 1
+fi
+
 mkdir -p "$out"
 name="LectureEdit-$version-macOS-Apple-Silicon"
 cp "$bundle/dmg/LectureEdit_${version}_aarch64.dmg" "$out/$name.dmg"
