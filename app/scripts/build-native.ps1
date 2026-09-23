@@ -1,12 +1,13 @@
 #requires -Version 7.0
 param(
     [ValidateSet('multi','baseline')][string]$CpuProfile = 'multi',
-    [ValidateRange(1,32)][int]$Jobs = 4
+    [ValidateRange(1,32)][int]$Jobs = 4,
+    [ValidateSet('msvc','clang')][string]$Toolset = 'msvc'
 )
 . (Join-Path $PSScriptRoot 'windows\Windows-Common.ps1')
 Initialize-WindowsBuildEnvironment -InstallToolchain
 $source = Join-Path $script:AppDir '.native-build\source\llama'
-$build = Join-Path $script:AppDir ".native-build\windows-x64-$CpuProfile"
+$build = Join-Path $script:AppDir ".native-build\windows-x64-$CpuProfile-$Toolset"
 $native = Join-Path $script:AppDir 'src-tauri\resources\native'
 Push-Location $script:RepoDir
 try {
@@ -26,7 +27,7 @@ try {
     Invoke-Checked git.exe @('-C',$source,'diff','--cached','--quiet')
     Invoke-Checked git.exe @('-C',$source,'checkout','--detach',$script:LlamaCommit)
     if ((& git.exe -C $source rev-parse HEAD).Trim() -ne $script:LlamaCommit) { throw 'llama.cpp commit mismatch.' }
-    $options = @('-S',$source,'-B',$build,'-G','Visual Studio 17 2022','-A','x64','-T','host=x64',
+    $options = @('-S',$source,'-B',$build,'-G','Visual Studio 17 2022','-A','x64','-T',$(if ($Toolset -eq 'clang') {'ClangCL,host=x64'} else {'host=x64'}),
         "-DCMAKE_GENERATOR_INSTANCE=$script:VisualStudioDir",'-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL',
         '-DGGML_NATIVE=OFF','-DGGML_OPENMP=OFF','-DGGML_CUDA=OFF','-DGGML_HIP=OFF',
         '-DGGML_VULKAN=OFF','-DGGML_SYCL=OFF','-DGGML_OPENCL=OFF','-DGGML_BLAS=OFF','-DGGML_METAL=OFF',

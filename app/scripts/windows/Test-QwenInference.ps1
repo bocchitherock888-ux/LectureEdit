@@ -4,7 +4,8 @@
 param(
     [Parameter(Mandatory)][string]$NativeRoot,
     [Parameter(Mandatory)][string]$ModelDir,
-    [string]$Report
+    [string]$Report,
+    [ValidateRange(1,50)][int]$Iterations = 1
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -23,7 +24,8 @@ foreach ($name in $files.Keys) {
     }
 }
 
-$work = Join-Path ([IO.Path]::GetTempPath()) "lectureedit-qwen-test-$PID"
+# Non-ASCII and a space, like C:\Users\张伟\AppData — a common Chinese Windows profile path.
+$work = Join-Path ([IO.Path]::GetTempPath()) "LectureEdit 课堂测试-$PID"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $wav = Join-Path $work 'speech.wav'
 $phrase = 'The opportunity cost of studying economics is the time you could have spent sleeping.'
@@ -36,13 +38,12 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $wav)) { throw 'Speech 
 
 $server = Join-Path $NativeRoot 'qwen\llama-server.exe'
 $key = [guid]::NewGuid().ToString('N')
-$keyFile = Join-Path $work 'worker.key'
-Set-Content -LiteralPath $keyFile -Value $key -NoNewline
+$env:LLAMA_API_KEY = $key
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $listener.Start()
 $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $stderr = Join-Path $work 'server.err.log'; $stdout = Join-Path $work 'server.out.log'
 $arguments = @('-m',(Join-Path $ModelDir 'Qwen3-ASR-0.6B-Q8_0.gguf'),'--mmproj',(Join-Path $ModelDir 'mmproj-Qwen3-ASR-0.6B-Q8_0.gguf'),
-    '--host','127.0.0.1','--port',"$port",'--api-key-file',$keyFile,'--no-webui','--jinja','-ngl','0','-c','4096','-np','1')
+    '--host','127.0.0.1','--port',"$port",'--no-webui','--jinja','-ngl','0','-c','4096','-np','1','--cache-ram','0')
 $process = Start-Process -FilePath $server -ArgumentList ($arguments | ForEach-Object { '"{0}"' -f $_ }) -WorkingDirectory $work `
     -RedirectStandardError $stderr -RedirectStandardOutput $stdout -PassThru -NoNewWindow
 $headers = @{ Authorization = "Bearer $key" }
@@ -66,7 +67,16 @@ try {
         messages = @(@{ role = 'user'; content = @(@{ type = 'input_audio'; input_audio = @{ data = [Convert]::ToBase64String([IO.File]::ReadAllBytes($wav)); format = 'wav' } }) })
         stream = $false; temperature = 0; max_tokens = 256
     } | ConvertTo-Json -Depth 10
-    $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/v1/chat/completions" -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 300
+    $timings = @()
+    for ($i = 0; $i -lt $Iterations; $i++) {
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$port/v1/chat/completions" -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 300
+        $timings += $clock.Elapsed.TotalSeconds
+    }
+    $audioSeconds = ((Get-Item -LiteralPath $wav).Length - 44) / 32000
+    $result.audio_seconds = [math]::Round($audioSeconds, 2)
+    $result.request_seconds = $timings | ForEach-Object { [math]::Round($_, 3) }
+    Write-Host ('Audio {0:N2}s; request seconds: {1}' -f $audioSeconds, (($timings | ForEach-Object { $_.ToString('N3') }) -join ', '))
     $text = [string]$response.choices[0].message.content
     Write-Host "Transcript: $text"
     $result.transcript = $text

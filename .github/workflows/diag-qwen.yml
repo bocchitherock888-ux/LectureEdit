@@ -8,6 +8,10 @@ jobs:
   diag:
     runs-on: windows-2022
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        toolset: [msvc, clang]
     defaults:
       run:
         shell: pwsh
@@ -24,6 +28,8 @@ jobs:
           python-version: '3.12'
           architecture: x64
       - name: Build native runtime
-        run: ./app/scripts/build-native.ps1 -CpuProfile multi -Jobs 4
+        run: ./app/scripts/build-native.ps1 -CpuProfile multi -Jobs 4 -Toolset ${{ matrix.toolset }}
       - name: Load model and transcribe with packaged runtime
-        run: ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\qwen-model"
+        run: |
+          (Get-CimInstance Win32_Processor).Name
+          ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Iterations 6
