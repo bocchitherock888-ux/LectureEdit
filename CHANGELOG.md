@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 — 2026-09-23
+
+- The live transcript now rolls upward smoothly instead of jumping between the middle and the bottom of the window. New paragraphs used a placeholder height until drawn, so the page grew and shrank; the newest paragraphs are now always fully laid out, and following only moves forward with a short glide
+- Dragging the scrollbar while the transcript is gliding stops following, as before
+- Windows CI reuses the compiled llama.cpp runtime and Rust dependencies between releases; the packaged model still transcribes real speech on every build
+
 ## 0.1.2 — 2026-09-23
 
 - Vocabulary words no longer appear in the transcript by themselves (e.g. "Tocqueville. Tocqueville." after the speaker stops) or replace a different word. When a local transcript contains a vocabulary word, a second pass without the vocabulary has to hear something similar in the same place.

@@ -25,7 +25,7 @@ When a lecturer's name is transcribed incorrectly, correct it while you remember
 
 ## Downloads and platforms
 
-The current version is **0.1.2 beta**.
+The current version is **0.1.3 beta**.
 
 | Platform | Status |
 |---|---|
