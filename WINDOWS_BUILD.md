@@ -1,4 +1,4 @@
-# LectureEdit 0.1.1 · Windows x64 构建执行手册
+# LectureEdit 0.1.2 · Windows x64 构建执行手册
 
 日期：2026-09-20。输入为用户提供的 `LectureEdit-0.1.0-source.zip`。本目录已经包含修改后的完整源码。
 
@@ -81,7 +81,7 @@ LectureEdit-windows-x64-multi-运行编号
 解压其中的最新构建目录，应看到：
 
 ```text
-LectureEdit_0.1.1_windows-x64_multi_setup.exe
+LectureEdit_0.1.2_windows-x64_multi_setup.exe
 BUILD-INFO.json
 BINARY-AUDIT.json
 native-audit.json
@@ -203,7 +203,7 @@ LectureEdit\app\src-tauri\target\x86_64-pc-windows-msvc\release\lectureedit.exe
 校验安装器：
 
 ```powershell
-Get-FileHash .\LectureEdit_0.1.1_windows-x64_multi_setup.exe -Algorithm SHA256
+Get-FileHash .\LectureEdit_0.1.2_windows-x64_multi_setup.exe -Algorithm SHA256
 ```
 
 与同目录 `SHA256SUMS.txt` 对照。哈希用于核对文件，数字签名用于验证发布者，两项应分别记录。NSIS 安装器的引导程序架构与安装进去的主程序架构可以不同；本包对实际 app、helper 和 DLL 检查 `0x8664`。

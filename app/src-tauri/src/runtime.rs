@@ -1514,7 +1514,12 @@ impl Runtime {
             }
         };
         let archiver = match Archiver::new(self.clone(), sid.to_owned(), rid.clone(), input.rate) {
-            Ok(archiver) => archiver,
+            Ok(mut archiver) => {
+                if source == "microphone" {
+                    archiver.watch_for_muted_input();
+                }
+                archiver
+            }
             Err(error) => {
                 input.handle.stop();
                 let _ = self.close_run(sid, &rid, 0, "interrupted", Some(&error));
@@ -2233,15 +2238,21 @@ fn rms(samples: impl Iterator<Item = i16>) -> f64 {
     });
     (sum / count.max(1) as f64).sqrt()
 }
-/// Near-silent audio makes the model hallucinate, so it is skipped unless some 20 ms frame is
-/// loud enough for the recorder to have called it speech.
+/// 20 ms frames of speech a segment needs before it is worth sending to the model.
+const MIN_SPEECH_FRAMES: usize = 10;
+/// Near-silent audio makes the model hallucinate (often words from the vocabulary), so it is
+/// skipped unless at least 200 ms is loud enough for the recorder to have called it speech;
+/// a lone click or breath does not qualify.
 fn has_speech(pcm: &[u8]) -> bool {
-    pcm.chunks(640).any(|frame| {
-        rms(frame
-            .chunks_exact(2)
-            .map(|pair| i16::from_le_bytes([pair[0], pair[1]])))
-            > SPEECH_RMS
-    })
+    pcm.chunks(640)
+        .filter(|frame| {
+            rms(frame
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]])))
+                > SPEECH_RMS
+        })
+        .nth(MIN_SPEECH_FRAMES - 1)
+        .is_some()
 }
 /// Keeps segment and note anchors inside a run whose durable audio is shorter than published.
 fn clamp_run_ranges(session: &mut Value, rid: &str, samples: u64) {
@@ -2291,7 +2302,17 @@ struct Archiver {
     silence: u64,
     last_partial: u64,
     last_sync: u64,
+    /// Digital-zero samples seen since recording began, while still watching for a muted input.
+    muted_samples: Option<u64>,
 }
+/// A microphone the OS will not let us hear delivers exact zeros instead of an error
+/// (missing permission, or on macOS a build without the audio-input entitlement).
+const MUTED_INPUT_SAMPLES: u64 = 3 * 16_000;
+const MUTED_MICROPHONE: &str = if cfg!(target_os = "macos") {
+    "麦克风没有传来任何声音。请在「系统设置 → 隐私与安全性 → 麦克风」中允许 LectureEdit，然后重新开始录音"
+} else {
+    "麦克风没有传来任何声音。请在「设置 → 隐私和安全性 → 麦克风」中打开“允许桌面应用访问麦克风”，并确认麦克风没有被静音"
+};
 impl Archiver {
     fn new(runtime: Arc<Runtime>, sid: String, rid: String, rate: u32) -> Result<Self, String> {
         let path = runtime.run_path(&sid, &rid)?;
@@ -2315,7 +2336,11 @@ impl Archiver {
             silence: 0,
             last_partial: 0,
             last_sync: 0,
+            muted_samples: None,
         })
+    }
+    fn watch_for_muted_input(&mut self) {
+        self.muted_samples = Some(0);
     }
     fn gap(&self, start: u64, end: u64, reason: &str) -> Result<(), String> {
         let start = start * 16000 / self.input_rate as u64;
@@ -2362,6 +2387,20 @@ impl Archiver {
             .write_all(&bytes)
             .map_err(|e| format!("录音保存失败：{e}"))?;
         self.samples += pcm.len() as u64;
+        if let Some(muted) = self.muted_samples {
+            let muted = muted + pcm.len() as u64;
+            self.muted_samples = if pcm.iter().any(|&sample| sample != 0) {
+                None
+            } else if muted >= MUTED_INPUT_SAMPLES {
+                self.runtime.update(&self.sid, |s| {
+                    s["error"] = json!(MUTED_MICROPHONE);
+                    Ok(())
+                })?;
+                None
+            } else {
+                Some(muted)
+            };
+        }
         if rms(pcm.iter().copied()) > SPEECH_RMS {
             self.voiced = true;
             self.silence = 0;
@@ -2565,6 +2604,156 @@ fn sanitize_vocabulary_prompt_leak(text: &str, settings: &Value) -> String {
         .trim()
         .to_owned()
 }
+fn normalized_word(word: &str) -> String {
+    word.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}')
+}
+/// Whether a normalized word is a vocabulary stem or an inflection of it ("Tocquevillians"),
+/// allowing the last two letters of the stem to change.
+fn is_stem_form(word: &str, stem: &str) -> bool {
+    let needed = stem.chars().count().saturating_sub(2).max(3);
+    word.chars()
+        .zip(stem.chars())
+        .take_while(|(w, s)| w == s)
+        .count()
+        >= needed
+}
+/// Word stems of the preferred spellings; the bias also produces inflected forms of them.
+fn vocabulary_stems(settings: &Value) -> Vec<String> {
+    vocabulary_terms(settings)
+        .iter()
+        .flat_map(|term| term.split_whitespace().map(normalized_word))
+        .filter(|stem| stem.chars().count() >= 3)
+        .collect()
+}
+fn mentions_vocabulary(text: &str, settings: &Value) -> bool {
+    let stems = vocabulary_stems(settings);
+    text.split_whitespace().any(|word| {
+        let word = normalized_word(word);
+        stems.iter().any(|stem| is_stem_form(&word, stem))
+    }) || vocabulary_terms(settings)
+        .iter()
+        .any(|term| term.chars().any(is_cjk) && text.contains(term.as_str()))
+}
+fn edit_distance(left: &[char], right: &[char]) -> usize {
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (i, l) in left.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, r) in right.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(l != r))
+                .min(above + 1)
+                .min(row[j] + 1);
+            diagonal = above;
+        }
+    }
+    row[right.len()]
+}
+/// Whether two spans plausibly came from the same sounds ("Tocqueville" / "Tokeville").
+fn sounds_alike(left: &str, right: &str) -> bool {
+    let (left, right): (Vec<char>, Vec<char>) = (left.chars().collect(), right.chars().collect());
+    let longest = left.len().max(right.len());
+    longest > 0 && edit_distance(&left, &right) * 2 <= longest
+}
+/// Keeps vocabulary words from the biased transcript only where the context-free transcript
+/// heard something similar at the same place. Words the plain pass did not hear at all
+/// (silence, trailing noise) are dropped; words it heard differently are replaced.
+fn verify_vocabulary(biased: &str, plain: &str, settings: &Value) -> String {
+    let stems = vocabulary_stems(settings);
+    let is_term = |word: &str| {
+        let word = normalized_word(word);
+        !word.is_empty() && stems.iter().any(|stem| is_stem_form(&word, stem))
+    };
+    let has_words = |text: &str| text.chars().any(char::is_alphanumeric);
+    if biased.chars().any(is_cjk) {
+        // No word boundaries to align on; only reject output that is nothing but vocabulary.
+        let mut rest = biased.to_owned();
+        for term in vocabulary_terms(settings) {
+            rest = rest.replace(term.as_str(), "");
+        }
+        let rest: String = rest
+            .split_whitespace()
+            .filter(|word| !is_term(word))
+            .collect();
+        return if has_words(&rest) {
+            biased.to_owned()
+        } else {
+            plain.trim().to_owned()
+        };
+    }
+    let heard: Vec<String> = settings["customVocabulary"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|entry| vocabulary_pair(entry).0.map(normalized_word))
+        .collect();
+    let a: Vec<&str> = biased.split_whitespace().collect();
+    let b: Vec<&str> = plain.split_whitespace().collect();
+    let (na, nb): (Vec<String>, Vec<String>) = (
+        a.iter().map(|w| normalized_word(w)).collect(),
+        b.iter().map(|w| normalized_word(w)).collect(),
+    );
+    // Longest common subsequence table, filled from the end so the walk below runs forwards.
+    let mut lcs = vec![vec![0u16; nb.len() + 1]; na.len() + 1];
+    for i in (0..na.len()).rev() {
+        for j in (0..nb.len()).rev() {
+            lcs[i][j] = if na[i] == nb[j] && !na[i].is_empty() {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let mut out: Vec<&str> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && na[i] == nb[j] && !na[i].is_empty() {
+            out.push(a[i]);
+            i += 1;
+            j += 1;
+            continue;
+        }
+        // Collect the differing block up to the next common word.
+        let (start_a, start_b) = (i, j);
+        while (i < a.len() || j < b.len())
+            && !(i < a.len() && j < b.len() && na[i] == nb[j] && !na[i].is_empty())
+        {
+            if j >= b.len() || (i < a.len() && lcs[i + 1][j] >= lcs[i][j + 1]) {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+        let (block_a, block_b) = (&a[start_a..i], &b[start_b..j]);
+        if !block_a.iter().any(|word| is_term(word)) {
+            out.extend(block_a);
+            continue;
+        }
+        let heard_b: String = nb[start_b..j].concat();
+        if !block_b.is_empty()
+            && (sounds_alike(&na[start_a..i].concat(), &heard_b) || heard.contains(&heard_b))
+        {
+            out.extend(block_a);
+        } else if block_b.is_empty() {
+            out.extend(block_a.iter().filter(|word| !is_term(word)));
+        } else {
+            out.extend(block_b);
+        }
+    }
+    let text = out.join(" ");
+    if has_words(&text) {
+        text
+    } else {
+        String::new()
+    }
+}
 fn same_model_settings(left: &Value, right: &Value) -> bool {
     [
         "engine",
@@ -2709,7 +2898,10 @@ impl Model {
                 .try_wait()
                 .map_err(|e| e.to_string())?
             {
-                return Err(early_exit_message(status.code(), &root.join(QWEN_SERVER_LOG)));
+                return Err(early_exit_message(
+                    status.code(),
+                    &root.join(QWEN_SERVER_LOG),
+                ));
             }
             if loaded
                 .client
@@ -2780,8 +2972,18 @@ impl Model {
             let _ = fs::remove_file(prefix.with_extension("output.txt"));
             return result.map(|t| t.trim().to_owned());
         }
-        let mut messages = Vec::new();
         let context = vocabulary_prompt(request_settings);
+        let biased = sanitize_vocabulary_prompt_leak(&self.qwen(wav, &context)?, request_settings);
+        if context.is_empty() || !mentions_vocabulary(&biased, request_settings) {
+            return Ok(biased);
+        }
+        // The vocabulary context biases Qwen strongly enough that it sometimes emits a term for
+        // silence or swaps it in for a different word. A context-free pass vouches for each term.
+        let plain = self.qwen(wav, "")?;
+        Ok(verify_vocabulary(&biased, &plain, request_settings))
+    }
+    fn qwen(&self, wav: &[u8], context: &str) -> Result<String, String> {
+        let mut messages = Vec::new();
         if !context.is_empty() {
             messages.push(json!({"role":"system","content":context}));
         }
@@ -2824,10 +3026,7 @@ impl Model {
         let raw = value["choices"][0]["message"]["content"]
             .as_str()
             .ok_or("本地模型响应格式无效")?;
-        Ok(sanitize_vocabulary_prompt_leak(
-            &parse_qwen(raw),
-            request_settings,
-        ))
+        Ok(parse_qwen(raw))
     }
 }
 fn parse_qwen(raw: &str) -> String {
@@ -3257,7 +3456,9 @@ mod tests {
         let log = temp.path().join(QWEN_SERVER_LOG);
         fs::write(&log, "warning: no usable GPU found\nload_model: failed to load mmproj\n\nwarning: consult docs\n").unwrap();
         let message = early_exit_message(Some(-1073740791), &log);
-        assert!(message.starts_with("本地识别程序提前退出（代码 0xC0000409）：load_model: failed to load mmproj"));
+        assert!(message.starts_with(
+            "本地识别程序提前退出（代码 0xC0000409）：load_model: failed to load mmproj"
+        ));
         assert!(message.ends_with(&log.display().to_string()));
         let missing = early_exit_message(None, &temp.path().join("absent.log"));
         assert!(missing.contains("请检查模型与程序是否匹配"));
@@ -3772,6 +3973,35 @@ mod tests {
         assert_eq!(runtime.session(&sid).unwrap()["runs"][0]["samples"], 3200);
         let epoch = runtime.snapshot().unwrap().worker_epoch;
         runtime.dispatch(json!({"type":"machine","commandId":uid(),"sessionId":sid,"segmentId":job.id,"runId":rid,"startSample":0,"endSample":3200,"text":"test","revision":1,"workerEpoch":epoch,"final":true})).unwrap();
+    }
+    #[test]
+    fn a_microphone_delivering_only_zeros_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let state = runtime
+            .dispatch(
+                json!({"type":"createSession","commandId":uid(),"title":"muted","mode":"live"}),
+            )
+            .unwrap();
+        let sid = state.selected_session_id.unwrap();
+        let record = |samples: Vec<f32>| {
+            let rid = runtime.add_run(&sid, "microphone").unwrap();
+            let mut archiver = Archiver::new(runtime.clone(), sid.clone(), rid, 16000).unwrap();
+            archiver.watch_for_muted_input();
+            archiver
+                .frame(capture::Frame { start: 0, samples })
+                .unwrap();
+            archiver.finish().unwrap();
+            runtime.session(&sid).unwrap()["error"].clone()
+        };
+        // A real, quiet room still has a noise floor.
+        assert!(record(
+            (0..64_000)
+                .map(|i| if i % 2 == 0 { 1e-4 } else { -1e-4 })
+                .collect()
+        )
+        .is_null());
+        assert_eq!(record(vec![0.0; 64_000]), MUTED_MICROPHONE);
     }
     #[test]
     fn corrupt_jobs_are_quarantined_and_valid_jobs_continue() {
@@ -4362,11 +4592,79 @@ mod tests {
             .flat_map(|index| (if index % 2 == 0 { 200i16 } else { -200 }).to_le_bytes())
             .collect();
         assert!(!has_speech(&quiet));
+        let mut click = quiet.clone();
+        for sample in click[6400..7040].chunks_exact_mut(2) {
+            sample.copy_from_slice(&2000i16.to_le_bytes());
+        }
+        assert!(!has_speech(&click));
         let mut voiced = quiet.clone();
-        for sample in voiced[6400..7040].chunks_exact_mut(2) {
+        for sample in voiced[6400..12800].chunks_exact_mut(2) {
             sample.copy_from_slice(&2000i16.to_le_bytes());
         }
         assert!(has_speech(&voiced));
+    }
+
+    #[test]
+    fn vocabulary_words_need_the_context_free_pass_to_agree() {
+        let settings = json!({"customVocabulary":["Tocqueville","con yard → Cournot"]});
+        assert!(mentions_vocabulary(
+            "the Greeks idolized their Tocquevillians.",
+            &settings
+        ));
+        assert!(!mentions_vocabulary(
+            "the Greeks idolized their Olympians.",
+            &settings
+        ));
+        // Swapped in for a different word: the plain pass wins.
+        assert_eq!(
+            verify_vocabulary(
+                "the same way the Greeks idolized their Tocquevillians. Americans",
+                "the same way the Greeks idolized their Olympians. Americans",
+                &settings
+            ),
+            "the same way the Greeks idolized their Olympians. Americans"
+        );
+        // Emitted over trailing silence: dropped.
+        assert_eq!(
+            verify_vocabulary(
+                "complete their K to twelve in a day. Tocqueville. Tocqueville. Tocqueville.",
+                "complete their K to twelve in a day.",
+                &settings
+            ),
+            "complete their K to twelve in a day."
+        );
+        assert_eq!(
+            verify_vocabulary("Tocqueville. Tocqueville.", "", &settings),
+            ""
+        );
+        // Genuinely spoken but spelled differently without context: the term is kept.
+        assert_eq!(
+            verify_vocabulary(
+                "As Tocqueville wrote, equality spreads.",
+                "As Tokeville wrote, equality spreads.",
+                &settings
+            ),
+            "As Tocqueville wrote, equality spreads."
+        );
+        assert_eq!(
+            verify_vocabulary("The Cournot model.", "The con yard model.", &settings),
+            "The Cournot model."
+        );
+        // Words the context did not affect are left alone.
+        assert_eq!(
+            verify_vocabulary(
+                "Tocqueville saw two tendencies.",
+                "Tokeville saw too tendencies.",
+                &settings
+            ),
+            "Tocqueville saw two tendencies."
+        );
+        let chinese = json!({"customVocabulary":["托克维尔"]});
+        assert_eq!(verify_vocabulary("托克维尔。托克维尔。", "", &chinese), "");
+        assert_eq!(
+            verify_vocabulary("托克维尔认为平等。", "托克维尔认为平等。", &chinese),
+            "托克维尔认为平等。"
+        );
     }
 
     #[test]

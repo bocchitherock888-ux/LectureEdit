@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-09-23
+
+- Vocabulary words no longer appear in the transcript by themselves (e.g. "Tocqueville. Tocqueville." after the speaker stops) or replace a different word. When a local transcript contains a vocabulary word, a second pass without the vocabulary has to hear something similar in the same place.
+- Segments with less than 200 ms of speech (a click or a breath) are no longer sent to the model
+- macOS: the microphone recorded silence in 0.1.1 because the build lacked the audio-input entitlement; fixed, and the release script now checks for it
+- Warn when the microphone delivers only silence for 3 seconds, with where to grant access on macOS or Windows
+
 ## 0.1.1 — 2026-09-23
 
 ### Windows

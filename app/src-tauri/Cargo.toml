@@ -1,7 +1,7 @@
 [package]
 name = "lectureedit"
 default-run = "lectureedit"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Local lecture recording and live correction"
 license = "MIT"
