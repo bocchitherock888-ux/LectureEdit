@@ -19,7 +19,7 @@ import { GlobalSearch, type SearchResult } from './GlobalSearch';
 import { modelStoppedRunning, SettingsDialog } from './SettingsDialog';
 import { changedTranscriptSegments, persistTranscriptEdits, transcriptTextMap, TranscriptSaveError, type TranscriptTextMap } from './documentEditing';
 import { sentencePlaybackSlices, type SentencePlaybackSlice } from './sentencePlayback';
-import { shouldPauseTranscriptFollow, transcriptFollowTarget } from './transcriptFollow';
+import { followStep, nextFollowGoal, shouldPauseTranscriptFollow, transcriptFollowTarget } from './transcriptFollow';
 import type { AppState, Draft, Note, NoteKind, Project, RuntimeInfo, Segment, Session } from './types';
 import { commandId } from './types';
 
@@ -544,6 +544,7 @@ export default function App() {
   const [noteSegment, setNoteSegment] = useState<string | null>(null); const [noteKind, setNoteKind] = useState<NoteKind>('note'); const [reviewSegment, setReviewSegment] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null); const transcriptContentRef = useRef<HTMLDivElement>(null); const followAnchorRef = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0); const lastScrollHeight = useRef(0); const lastClientHeight = useRef(0); const programmaticScrollRef = useRef(false); const scrollGuardTimer = useRef<number | undefined>(undefined); const scrollAnimationRef = useRef<ReturnType<typeof animate> | null>(null);
+  const followGoalRef = useRef<{ goal: number; viewport: number } | null>(null); const followFrameRef = useRef<number | undefined>(undefined); const pauseFollowingRef = useRef<() => void>(() => undefined);
   const pointerDownRef = useRef(false); const touchStartYRef = useRef<number | null>(null);
   const transcriptStateRef = useRef<{ sessionId: string | null; count: number; revision: string }>({ sessionId: null, count: 0, revision: '' }); const seenSegmentsRef = useRef<Set<string>>(new Set()); const seenSessionRef = useRef<string | null>(null); const groupingRef = useRef<{ sessionId: string | null; state: TranscriptGroupingState }>({ sessionId: null, state: { known: new Set(), paragraphStarts: new Set() } }); const [exportOpen, setExportOpen] = useState(false); const [moreOpen, setMoreOpen] = useState(false);
   const engineButtonRef = useRef<HTMLButtonElement>(null); const exportButtonRef = useRef<HTMLButtonElement>(null); const moreButtonRef = useRef<HTMLButtonElement>(null);
@@ -807,24 +808,58 @@ export default function App() {
     if (seenSessionRef.current !== sessionId) { seenSessionRef.current = sessionId; seenSegmentsRef.current = new Set(selected?.segments.map((segment) => segment.id) ?? []); }
     else selected?.segments.forEach((segment) => seenSegmentsRef.current.add(segment.id));
   }, [selected?.id, selected?.segments, transcriptRevision, viewMode]);
+  const stopFollowGlide = useCallback(() => {
+    if (followFrameRef.current !== undefined) cancelAnimationFrame(followFrameRef.current);
+    followFrameRef.current = undefined;
+  }, []);
   const syncFollowPosition = useCallback(() => {
     if (viewModeRef.current !== 'following' || editorRef.current) return;
     const element = transcriptRef.current;
     const target = getFollowTarget();
     if (!element || target === null) return;
-    if (Math.abs(target - element.scrollTop) < .5) {
+    const viewport = element.clientHeight;
+    const previous = followGoalRef.current;
+    // A resized window re-anchors; otherwise the goal only advances (see nextFollowGoal).
+    const goal = nextFollowGoal(previous && previous.viewport === viewport ? previous.goal : null, target, viewport);
+    followGoalRef.current = { goal, viewport };
+    const settle = () => {
       lastScrollTop.current = element.scrollTop;
       lastScrollHeight.current = element.scrollHeight;
       lastClientHeight.current = element.clientHeight;
+    };
+    if (Math.abs(goal - element.scrollTop) < .5) { settle(); return; }
+    scrollAnimationRef.current?.stop();
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // First placement (opening a lesson, resizing) is instant; live growth glides.
+    if (!previous || previous.viewport !== viewport || reduce) {
+      stopFollowGlide();
+      guardProgrammaticScroll(80);
+      element.scrollTop = goal;
+      settle();
       return;
     }
-    scrollAnimationRef.current?.stop();
-    guardProgrammaticScroll(80);
-    element.scrollTop = target;
-    lastScrollTop.current = target;
-    lastScrollHeight.current = element.scrollHeight;
-    lastClientHeight.current = element.clientHeight;
-  }, [getFollowTarget, guardProgrammaticScroll]);
+    if (followFrameRef.current !== undefined) return;
+    programmaticScrollRef.current = true;
+    let last = performance.now();
+    let placed = element.scrollTop;
+    const tick = (now: number) => {
+      const current = followGoalRef.current;
+      if (viewModeRef.current !== 'following' || !current) { followFrameRef.current = undefined; return; }
+      // Dragging the scrollbar mid-glide: hand the page back to the reader.
+      if (pointerDownRef.current && Math.abs(element.scrollTop - placed) > 2) { followFrameRef.current = undefined; programmaticScrollRef.current = false; pauseFollowingRef.current(); return; }
+      element.scrollTop = followStep(element.scrollTop, current.goal, now - last);
+      placed = element.scrollTop;
+      last = now;
+      settle();
+      if (Math.abs(current.goal - element.scrollTop) < .5) {
+        followFrameRef.current = undefined;
+        guardProgrammaticScroll(80);
+        return;
+      }
+      followFrameRef.current = requestAnimationFrame(tick);
+    };
+    followFrameRef.current = requestAnimationFrame(tick);
+  }, [getFollowTarget, guardProgrammaticScroll, stopFollowGlide]);
   useLayoutEffect(() => {
     const content = transcriptContentRef.current;
     const element = transcriptRef.current;
@@ -833,8 +868,8 @@ export default function App() {
     observer.observe(content);
     observer.observe(element);
     syncFollowPosition();
-    return () => { observer.disconnect(); scrollAnimationRef.current?.stop(); };
-  }, [selected?.id, syncFollowPosition]);
+    return () => { observer.disconnect(); scrollAnimationRef.current?.stop(); stopFollowGlide(); followGoalRef.current = null; };
+  }, [selected?.id, stopFollowGlide, syncFollowPosition]);
   useLayoutEffect(() => {
     syncFollowPosition();
   }, [syncFollowPosition, transcriptRevision, transcriptGroups]);
@@ -843,9 +878,10 @@ export default function App() {
     viewModeRef.current = 'reading_history';
     programmaticScrollRef.current = false;
     if (scrollGuardTimer.current) { clearTimeout(scrollGuardTimer.current); scrollGuardTimer.current = undefined; }
-    scrollAnimationRef.current?.stop();
+    scrollAnimationRef.current?.stop(); stopFollowGlide(); followGoalRef.current = null;
     setViewMode('reading_history'); setNoteSegment(null);
   };
+  pauseFollowingRef.current = pauseFollowing;
   const returnLatest = () => {
     viewModeRef.current = 'following';
     setViewMode('following'); setUnseen(0);
@@ -853,7 +889,8 @@ export default function App() {
     const element = transcriptRef.current;
     const target = getFollowTarget();
     if (!element || target === null) return;
-    scrollAnimationRef.current?.stop();
+    scrollAnimationRef.current?.stop(); stopFollowGlide();
+    followGoalRef.current = { goal: target, viewport: element.clientHeight };
     guardProgrammaticScroll(650);
     if (reduce) element.scrollTop = target;
     else scrollAnimationRef.current = animate(element.scrollTop, target, { type: 'spring', bounce: 0, duration: .34, onUpdate: (value) => { element.scrollTop = value; } });
@@ -1077,7 +1114,7 @@ export default function App() {
               {fullEditor && fullEditor.sessionId === selected.id ? <FullTranscriptEditor session={selected} values={fullEditor.values} original={fullEditor.original} status={fullEditor.status} error={fullEditor.error} onText={(segmentId, text) => setFullEditor((value) => value ? { ...value, values: { ...value.values, [segmentId]: text }, status: 'editing', error: '' } : value)} onSave={() => void saveFullDocument()} onDone={() => void saveFullDocument(true)} /> :
               <TranscriptAssist segments={selected.segments} sessionId={selected.id} configured={Boolean(runtime.deepseekKeyConfigured)} onSave={async (segmentId, text, sourceLabel) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId, kind: 'note', text, sourceLabel, imageData: null })))}>
               <div className="session-intro"><div><div className="session-title-row"><h2>{selected.title}</h2>{adapter.mode === 'demo' && <span className="demo-label">演示</span>}</div><p className="session-meta"><span>{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }).format(selected.createdAt)}</span><span>{cloudEngine ? 'Soniox · stt-rt-v5' : selected.runs[0]?.source === 'import' ? '导入音频 · 本地转写' : selected.runs[0]?.source === 'system' ? '系统声音 · 本地转写' : '麦克风 · 本地转写'}</span><span className="saved-state"><Check size={13} /> 已保存</span></p></div><button className="full-edit-trigger" onClick={() => void beginFullEdit()} disabled={captureInProgress} title={captureInProgress ? '录音结束后编辑全文' : '在连续页面中编辑完整文稿'}><Pencil size={14} /> 编辑全文</button></div>
-              {transcriptGroups.map((group) => <section className="transcript-paragraph" key={group.map((segment) => segment.id).join('|')}><p>{group.map((segment, index) => {
+              {transcriptGroups.map((group, groupIndex) => <section className={`transcript-paragraph ${groupIndex >= transcriptGroups.length - 3 ? 'is-recent' : ''}`} key={group.map((segment) => segment.id).join('|')}><p>{group.map((segment, index) => {
                 const entering = seenSessionRef.current === selected.id && seenSegmentsRef.current.size > 0 && !seenSegmentsRef.current.has(segment.id);
                 return <Fragment key={segment.id}>{index > 0 ? ' ' : null}<TranscriptBlock segment={segment} active={editor?.draft.segmentId === segment.id} playingKey={playingSegmentId} entering={entering} query="" onEdit={() => void beginEdit(segment)} onPlay={(anchor, playbackKey) => void playSegment(segment, anchor, playbackKey)} onUndo={() => void moveSegmentHistory(segment, 'undo')} onRedo={() => void moveSegmentHistory(segment, 'redo')} onReview={() => { setReviewSegment(segment.id); setModal('review'); }} composer={(sliceKey) => <InlineNoteComposer open={noteSegment === sliceKey} onOpenChange={(open) => { setNoteSegment(open ? sliceKey : null); if (open) setViewMode('reading_history'); }} kind={noteKind} setKind={setNoteKind} configured={Boolean(runtime.deepseekKeyConfigured)} onSubmit={async (value) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId: segment.id, ...value })))} />} /></Fragment>;
               })}</p>{group.flatMap((segment) => selected.notes.filter((note) => note.segmentId === segment.id)).map((note) => <NoteBlock key={note.id} note={note} onRemove={() => void update(adapter.dispatch({ type: 'removeNote', commandId: commandId(), sessionId: selected.id, noteId: note.id }))} />)}</section>)}
