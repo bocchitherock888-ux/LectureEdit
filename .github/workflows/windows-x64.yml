@@ -14,6 +14,14 @@ on:
         default: false
   push:
     tags: ['v*']
+    # Caches saved by a tag run are visible only to that tag. Build on main when the
+    # compiled inputs change, so every later release tag can restore main's caches.
+    branches: [main]
+    paths:
+      - .github/workflows/windows-x64.yml
+      - app/scripts/build-native.ps1
+      - app/scripts/windows/Windows-Common.ps1
+      - '**/Cargo.lock'
 
 permissions:
   contents: read
@@ -43,14 +51,28 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
-      - name: Cache fetched sources (no native binary cache)
+      - name: Cache fetched llama.cpp source
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            app/.native-build/source/llama
-          key: windows-x64-sources-rust192-391fac1-${{ hashFiles('**/Cargo.lock') }}
+          path: app/.native-build/source/llama
+          key: windows-x64-llama-source-${{ hashFiles('app/scripts/windows/Windows-Common.ps1') }}
+      # build-native.ps1 reuses these binaries only if their stamp matches the llama.cpp
+      # commit and every CMake option; otherwise it rebuilds. The inference test below
+      # still loads the packaged runtime and transcribes real speech on every run.
+      - name: Cache compiled llama.cpp runtime
+        uses: actions/cache@v4
+        with:
+          path: app/.native-build/windows-x64-${{ inputs.cpu_profile || 'multi' }}-msvc/bin/Release
+          key: windows-x64-llama-bin-${{ inputs.cpu_profile || 'multi' }}-${{ hashFiles('app/scripts/build-native.ps1', 'app/scripts/windows/Windows-Common.ps1') }}
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-x64-rust192
+          workspaces: |
+            app/src-tauri
+            app/native/windows-loopback
+            spikes/domain-rs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Parse all build scripts before running them
         run: |
           $ErrorActionPreference = 'Stop'

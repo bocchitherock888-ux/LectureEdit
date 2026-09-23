@@ -44,9 +44,19 @@ try {
             '-DGGML_AVX512_VNNI=OFF','-DGGML_AVX512_BF16=OFF','-DGGML_AVX_VNNI=OFF',
             '-DGGML_AMX_TILE=OFF','-DGGML_AMX_INT8=OFF','-DGGML_AMX_BF16=OFF')
     }
-    Invoke-Checked cmake.exe $options
-    Invoke-Checked cmake.exe @('--build',$build,'--config','Release','--target','llama-server','--parallel',"$Jobs")
     $bin = Join-Path $build 'bin\Release'
+    # CI restores bin\Release from a cache. Reuse it only when it was built from this exact commit and these options.
+    $stamp = Join-Path $bin 'lectureedit-build-key.txt'
+    $buildKey = (@($script:LlamaCommit) + $options) -join "`n"
+    if ((Test-Path (Join-Path $bin 'llama-server.exe') -PathType Leaf) -and (Test-Path $stamp -PathType Leaf) -and
+        ((Get-Content -Raw -LiteralPath $stamp) -ceq $buildKey)) {
+        Write-Host "Reusing llama.cpp $($script:LlamaCommit) built with identical options."
+    } else {
+        Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
+        Invoke-Checked cmake.exe $options
+        Invoke-Checked cmake.exe @('--build',$build,'--config','Release','--target','llama-server','--parallel',"$Jobs")
+        Set-Content -LiteralPath $stamp -Value $buildKey -NoNewline -Encoding utf8
+    }
     if (-not (Test-Path (Join-Path $bin 'llama-server.exe') -PathType Leaf)) { throw "Expected server output in $bin" }
     # llama.cpp is split into several DLLs that pass C++ objects and FILE handles to one another.
     # They must share one CRT, so the build uses /MD and ships Microsoft's app-local VC++ runtime.

@@ -104,6 +104,12 @@ gh run download <同一个databaseId> --dir windows-artifacts
 
 构建失败时打开日志中最早失败的阶段，下载 `LectureEdit-windows-x64-diagnostics-运行编号`。该阶段通过前，保持后续阶段为 `not_run`。
 
+### A3a. 构建缓存
+
+GitHub 只允许一个版本 tag 使用 main 分支或它自己存的缓存。所以当 llama.cpp 版本、编译参数、Rust 依赖或这个工作流改动并推到 main 时，main 会先完整构建一次（约 20 分钟），把编译好的 llama.cpp 和 Rust 依赖存进缓存。之后打版本 tag 时直接复用，只重编应用本身。
+
+`build-native.ps1` 在 `bin\Release\lectureedit-build-key.txt` 里记录 llama.cpp commit 和全部 CMake 参数，不一致就重新编译。无论是否命中缓存，都会加载打包后的模型运行时并转写真实语音。
+
 ### A4. 手动选择备用档或离线组件
 
 工作流文件位于默认分支后，Actions 页面可以显示 **Run workflow**。选需要构建的分支，选择 `cpu_profile=baseline` 或勾选 `offline_webview2`。GitHub 对手动触发的默认分支要求见 [GitHub manual workflow](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
