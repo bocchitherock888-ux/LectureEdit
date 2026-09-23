@@ -19,5 +19,9 @@ ditto -c -k --keepParent "$bundle/macos/LectureEdit.app" "$out/$name.zip"
 
 "$lsregister" -u "$PWD/$bundle/macos/LectureEdit.app" 2>/dev/null || true
 /bin/rm -r "$bundle/macos/LectureEdit.app"
+# The DMG step mounts a temporary /Volumes/dmg.XXXXXX volume; its app stays registered after unmount.
+"$lsregister" -dump 2>/dev/null | sed -n 's|^path: *\(/Volumes/dmg\.[^/]*/LectureEdit\.app\).*|\1|p' | sort -u | while read -r stale; do
+  "$lsregister" -u "$stale" 2>/dev/null || true
+done
 (cd "$out" && shasum -a 256 "$name.dmg" "$name.zip")
 echo "Release files: $PWD/$out"
