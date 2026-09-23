@@ -6,4 +6,6 @@ LectureEdit 由醉步羊（Tipram）提供的原创代码与文档采用 MIT Lic
 
 本地语音识别使用 llama.cpp 运行 Qwen3-ASR 模型。模型权重不包含在本仓库或安装包中，由用户在应用内下载，并遵循模型发布方的许可。
 
+Windows 安装包在 `native/qwen/` 中随附 Microsoft Visual C++ 运行库（`vcruntime140*.dll`、`msvcp140*.dll` 等），取自 Visual Studio 2022 的可再发行组件目录，按 Microsoft Visual C++ 可再发行组件的许可条款分发。
+
 云端转写（Soniox）与可选的 DeepSeek 功能需要你自己的 API 密钥。密钥只保存在本机运行中的应用进程里，不会进入本仓库。

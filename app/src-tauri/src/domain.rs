@@ -570,7 +570,9 @@ pub fn apply_command(state: &mut State, command: &Value) -> Result<(), String> {
                     .is_none_or(|session| &session.custom_vocabulary != entries)
             });
             if state.settings != settings || scoped_changed {
-                if !state.settings.transcription_eq(&settings) || scoped_changed {
+                // Scoped vocabulary is read per job (Qwen) or per connection (Soniox); bumping the
+                // epoch for it would kill a live Soniox stream mid-lecture.
+                if !state.settings.transcription_eq(&settings) {
                     state.worker_epoch =
                         state.worker_epoch.checked_add(1).ok_or("EPOCH_OVERFLOW")?;
                 }
@@ -927,32 +929,66 @@ fn machine(state: &mut State, command: &Value) -> Result<(), String> {
             final_,
         });
         segment.refresh_projection();
+        let open_draft = item
+            .drafts
+            .iter()
+            .any(|draft| draft.segment_id == id && draft.state == "open");
+        compact_machine_history(segment, open_draft);
     } else {
-        item.segments.push(Segment {
-            id: id.into(),
-            run_id: run_id.into(),
-            start_sample: start,
-            end_sample: end,
-            machine_text: text.clone(),
-            machine_revision: revision,
-            final_,
-            worker_epoch: epoch,
-            user_seq: 0,
-            display_text: text.clone(),
-            pending_machine: None,
-            corrected: false,
-            history: Vec::new(),
-            history_index: -1,
-            machine_history: vec![MachineHypothesis {
-                revision,
-                worker_epoch: epoch,
-                text,
+        insert_segment(
+            item,
+            Segment {
+                id: id.into(),
+                run_id: run_id.into(),
+                start_sample: start,
+                end_sample: end,
+                machine_text: text.clone(),
+                machine_revision: revision,
                 final_,
-            }],
-        });
+                worker_epoch: epoch,
+                user_seq: 0,
+                display_text: text.clone(),
+                pending_machine: None,
+                corrected: false,
+                history: Vec::new(),
+                history_index: -1,
+                machine_history: vec![MachineHypothesis {
+                    revision,
+                    worker_epoch: epoch,
+                    text,
+                    final_,
+                }],
+            },
+        );
     }
     bump(item);
     Ok(())
+}
+
+/// Segments stay in audio order (run order, then start) so a retried job lands in place.
+fn insert_segment(item: &mut Session, segment: Segment) {
+    let run_order = |run_id: &str| {
+        item.runs
+            .iter()
+            .position(|run| run.id == run_id)
+            .unwrap_or(usize::MAX)
+    };
+    let key = (run_order(&segment.run_id), segment.start_sample);
+    let index = item
+        .segments
+        .iter()
+        .rposition(|existing| (run_order(&existing.run_id), existing.start_sample) <= key)
+        .map_or(0, |index| index + 1);
+    item.segments.insert(index, segment);
+}
+
+/// Once final, an unedited segment's projection only reads the final hypothesis, and any later
+/// correction is based on it, so earlier partial hypotheses are dead weight in every save.
+fn compact_machine_history(segment: &mut Segment, open_draft: bool) {
+    if segment.final_ && segment.history.is_empty() && !open_draft {
+        let keep = segment.machine_history.len().saturating_sub(1);
+        segment.machine_history.drain(..keep);
+    }
 }
 
 struct FinalMachineSegment {
@@ -1066,12 +1102,16 @@ fn machine_segments(state: &mut State, command: &Value) -> Result<(), String> {
             final_: true,
         });
         existing.refresh_projection();
+        let open_draft = item
+            .drafts
+            .iter()
+            .any(|draft| draft.segment_id == first.id && draft.state == "open");
+        compact_machine_history(existing, open_draft);
     } else {
-        item.segments.push(new_final_segment(first, &run_id, epoch));
+        insert_segment(item, new_final_segment(first, &run_id, epoch));
     }
     for segment in &segments[1..] {
-        item.segments
-            .push(new_final_segment(segment, &run_id, epoch));
+        insert_segment(item, new_final_segment(segment, &run_id, epoch));
     }
     bump(item);
     Ok(())
@@ -2568,5 +2608,69 @@ mod tests {
         apply_command(&mut state, &json!({"type":"settings","settings":settings})).unwrap();
         assert_eq!(state.settings.theme, "dark");
         assert_eq!(state.worker_epoch, epoch);
+    }
+
+    #[test]
+    fn scoped_vocabulary_changes_keep_the_worker_epoch() {
+        let (mut state, session) = setup();
+        let epoch = state.worker_epoch;
+        let settings = state.settings.clone();
+        apply_command(
+            &mut state,
+            &json!({"type":"settings","settings":settings,"sessionId":session,"sessionVocabulary":["Talmy"]}),
+        )
+        .unwrap();
+        assert_eq!(state.sessions[0].custom_vocabulary, vec!["Talmy"]);
+        assert_eq!(state.worker_epoch, epoch);
+    }
+
+    #[test]
+    fn retried_segments_are_inserted_in_audio_order() {
+        let (mut state, session) = setup();
+        for run in ["r1", "r2"] {
+            state.sessions[0].runs.push(Run {
+                id: run.into(),
+                source: "microphone".into(),
+                engine: "qwen".into(),
+                started_at: 1,
+                ended_at: None,
+                samples: 1_000_000,
+                offset_ms: 0,
+                state: "closed".into(),
+            });
+        }
+        apply_command(&mut state, &json!({"type":"machine","sessionId":session,"segmentId":"r2a","runId":"r2","startSample":0,"endSample":100,"text":"later run","revision":1,"workerEpoch":0,"final":true})).unwrap();
+        apply_command(&mut state, &json!({"type":"machine","sessionId":session,"segmentId":"s3","runId":"r1","startSample":320000,"endSample":400000,"text":"third","revision":1,"workerEpoch":0,"final":true})).unwrap();
+        apply_command(&mut state, &json!({"type":"machineSegments","sessionId":session,"runId":"r1","workerEpoch":0,"segments":[
+            {"id":"s2","startSample":160000,"endSample":200000,"text":"Second a.","revision":1},
+            {"id":"s2b","startSample":200000,"endSample":320000,"text":"Second b.","revision":1}
+        ]})).unwrap();
+        let order: Vec<&str> = state.sessions[0]
+            .segments
+            .iter()
+            .map(|segment| segment.id.as_str())
+            .collect();
+        assert_eq!(order, ["s1", "s2", "s2b", "s3", "r2a"]);
+        validate_session(&state.sessions[0]).unwrap();
+    }
+
+    #[test]
+    fn final_machine_history_is_compacted_only_without_human_edits() {
+        let (mut state, session) = setup();
+        apply_command(&mut state, &json!({"type":"machine","sessionId":session,"segmentId":"s1","runId":"r1","startSample":0,"endSample":170000,"text":"According to Talmy, Path","revision":2,"workerEpoch":0,"final":false})).unwrap();
+        apply_command(&mut state, &json!({"type":"machine","sessionId":session,"segmentId":"s1","runId":"r1","startSample":0,"endSample":180000,"text":"According to Talmy, Path is encoded.","revision":3,"workerEpoch":0,"final":true})).unwrap();
+        let segment = &state.sessions[0].segments[0];
+        assert_eq!(segment.machine_history.len(), 1);
+        assert_eq!(segment.machine_history[0].revision, 3);
+        validate_session(&state.sessions[0]).unwrap();
+
+        let (mut edited, session) = setup();
+        apply_command(
+            &mut edited,
+            &json!({"type":"beginEdit","sessionId":session,"segmentId":"s1"}),
+        )
+        .unwrap();
+        apply_command(&mut edited, &json!({"type":"machine","sessionId":session,"segmentId":"s1","runId":"r1","startSample":0,"endSample":180000,"text":"According to Talmy, Path is encoded.","revision":2,"workerEpoch":0,"final":true})).unwrap();
+        assert_eq!(edited.sessions[0].segments[0].machine_history.len(), 2);
     }
 }

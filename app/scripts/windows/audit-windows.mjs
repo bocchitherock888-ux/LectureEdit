@@ -43,8 +43,8 @@ for (const file of files) {
   if (dllCheck) {
     const siblings = new Map(fs.readdirSync(path.dirname(file)).map(n => [n.toLowerCase(), n]));
     for (const imported of info.imports) {
-      if (requiresSeparateMsvcRuntime(imported)) throw new Error(`${file} requires ${imported}; static CRT/OpenMP settings were not applied.`);
       const sibling = siblings.get(imported.toLowerCase());
+      if (requiresSeparateMsvcRuntime(imported) && !sibling) throw new Error(`${file} requires ${imported}; package the app-local VC++ runtime beside it.`);
       if (sibling) dependencies.push({name:imported, from:'beside_binary'});
       else if (isApiSet(imported)) dependencies.push({name:imported, from:'windows_api_contract'});
       else if (fs.existsSync(path.join(process.env.SystemRoot || 'C:\\Windows','System32',imported))) dependencies.push({name:imported, from:'windows_system32'});

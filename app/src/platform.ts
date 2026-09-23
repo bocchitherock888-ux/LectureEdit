@@ -22,6 +22,11 @@ export function shortcutLabel(
   return `${modifier === 'alt' ? 'Alt' : 'Ctrl'}+${key === 'Enter' ? 'Enter' : key.toUpperCase()}`;
 }
 
+/** Primary shortcut modifier: ⌘ alone on macOS, Ctrl alone elsewhere. */
+export function isPrimaryShortcut(event: { metaKey: boolean; ctrlKey: boolean }, platform: string = browserPlatform()): boolean {
+  return normaliseDesktopPlatform(platform) === 'macos' ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+}
+
 export function canExportNativePdf(platform: string | undefined): boolean {
   return platform === 'macos';
 }

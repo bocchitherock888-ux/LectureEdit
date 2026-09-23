@@ -15,7 +15,8 @@
           "English",
           "SimpChinese"
         ],
-        "displayLanguageSelector": true
+        "displayLanguageSelector": true,
+        "installerHooks": "windows/installer-hooks.nsh"
       }
     }
   }

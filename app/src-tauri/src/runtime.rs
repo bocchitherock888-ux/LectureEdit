@@ -1,3 +1,4 @@
+use crate::native_process::SpawnTied;
 use crate::{capture, domain::State, store::Store};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex, Weak,
@@ -662,7 +663,16 @@ impl Runtime {
                     Path::new(&field(&command, "path")?),
                     &self.root.join("audio"),
                 )?;
-                self.store.lock().map_err(|_|"数据写入器不可用")?.dispatch(json!({"type":"importSession","commandId":command["commandId"],"session":session}))
+                let audio = self.root.join("audio").join(id(&session.id)?);
+                let imported = self
+                    .store
+                    .lock()
+                    .map_err(|_| "数据写入器不可用".to_owned())
+                    .and_then(|mut store| store.dispatch(json!({"type":"importSession","commandId":command["commandId"],"session":session})));
+                if imported.is_err() {
+                    let _ = fs::remove_dir_all(audio);
+                }
+                imported
             }
             "installModel" => {
                 if self
@@ -780,6 +790,20 @@ impl Runtime {
                     }
                 }
                 let incoming = command.get("settings").cloned().ok_or("MISSING_SETTINGS")?;
+                // The local worker idles while Soniox is selected, so queued Qwen audio would strand.
+                if incoming["engine"] == "soniox" && self.value()?["settings"]["engine"] != "soniox"
+                {
+                    let pending = self
+                        .jobs()?
+                        .iter()
+                        .filter(|job| !job.failed && !self.job_is_cloud(job).unwrap_or(false))
+                        .count();
+                    if pending > 0 {
+                        return Err(format!(
+                            "还有 {pending} 段音频正在本地转写，请等待完成后再切换到 Soniox"
+                        ));
+                    }
+                }
                 if incoming["autoPolish"] == true
                     && self
                         .deepseek_credential
@@ -1485,7 +1509,7 @@ impl Runtime {
         let input = match result {
             Ok(v) => v,
             Err(e) => {
-                self.close_run(sid, &rid, 0, "interrupted", Some(&e));
+                let _ = self.close_run(sid, &rid, 0, "interrupted", Some(&e));
                 return Err(e);
             }
         };
@@ -1493,14 +1517,14 @@ impl Runtime {
             Ok(archiver) => archiver,
             Err(error) => {
                 input.handle.stop();
-                self.close_run(sid, &rid, 0, "interrupted", Some(&error));
+                let _ = self.close_run(sid, &rid, 0, "interrupted", Some(&error));
                 return Err(error);
             }
         };
         if let Some(client) = cloud_client {
             if let Err(error) = self.spawn_cloud_live(sid.to_owned(), rid.clone(), client) {
                 input.handle.stop();
-                self.close_run(sid, &rid, 0, "interrupted", Some(&error));
+                let _ = self.close_run(sid, &rid, 0, "interrupted", Some(&error));
                 return Err(error);
             }
         }
@@ -1560,7 +1584,7 @@ impl Runtime {
             if let Err(e) = archiver.finish() {
                 failed = Some(e);
             }
-            runtime.close_run(
+            if let Err(error) = runtime.close_run(
                 &session,
                 &rid,
                 archiver.samples,
@@ -1570,7 +1594,9 @@ impl Runtime {
                     "closed"
                 },
                 failed.as_deref(),
-            );
+            ) {
+                runtime.error(&session, &format!("录音结束时保存失败：{error}"), false);
+            }
         });
         *active = Some(Recording {
             session: sid.to_owned(),
@@ -1585,8 +1611,11 @@ impl Runtime {
         }
         self.stop(sid)?;
         self.update(sid, |session| {
-            session["recordingState"] = json!("paused");
-            session["error"] = Value::Null;
+            // close_run records a capture failure as "error"; pausing must not hide it.
+            if session["recordingState"] != "error" {
+                session["recordingState"] = json!("paused");
+                session["error"] = Value::Null;
+            }
             Ok(())
         })?;
         Ok(())
@@ -1615,7 +1644,14 @@ impl Runtime {
         }
         Ok(())
     }
-    fn close_run(&self, sid: &str, rid: &str, samples: u64, state: &str, error: Option<&str>) {
+    fn close_run(
+        &self,
+        sid: &str,
+        rid: &str,
+        samples: u64,
+        state: &str,
+        error: Option<&str>,
+    ) -> Result<(), String> {
         // A device permission failure can close a zero-length run before the
         // archiver opens it. Preserve a valid empty recording for export/reopen.
         if samples == 0 {
@@ -1625,7 +1661,7 @@ impl Runtime {
                 }
             }
         }
-        let _ = self.update(sid, |s| {
+        self.update(sid, |s| {
             if let Some(r) = s["runs"]
                 .as_array_mut()
                 .and_then(|r| r.iter_mut().find(|r| r["id"] == rid))
@@ -1634,12 +1670,14 @@ impl Runtime {
                 r["state"] = json!(state);
                 r["endedAt"] = json!(now());
             }
+            clamp_run_ranges(s, rid, samples);
             s["recordingState"] = json!(if error.is_some() { "error" } else { "stopped" });
             if let Some(e) = error {
                 s["error"] = json!(e);
             }
             Ok(())
-        });
+        })
+        .map(drop)
     }
     fn import_audio(self: &Arc<Self>, sid: &str, path: &Path) -> Result<(), String> {
         if self.capture.lock().unwrap().is_some() {
@@ -1702,7 +1740,7 @@ impl Runtime {
         })();
         match result {
             Ok(samples) => {
-                self.close_run(sid, &rid, samples, "closed", None);
+                self.close_run(sid, &rid, samples, "closed", None)?;
                 if self.run_engine(sid, &rid)?.as_deref() == Some("soniox") {
                     self.update(sid, |session| {
                         session["inferenceState"] = json!("catching_up");
@@ -1719,7 +1757,7 @@ impl Runtime {
                     .metadata()
                     .map(|m| m.len() / 2)
                     .unwrap_or(0);
-                self.close_run(sid, &rid, samples, "interrupted", Some(&e));
+                let _ = self.close_run(sid, &rid, samples, "interrupted", Some(&e));
                 Err(e)
             }
         }
@@ -1811,7 +1849,7 @@ impl Runtime {
         Ok(())
     }
     fn recover(&self) -> Result<(), String> {
-        let jobs = self.jobs()?;
+        let mut jobs = self.jobs()?;
         let sessions = self.value()?["sessions"]
             .as_array()
             .cloned()
@@ -1843,6 +1881,19 @@ impl Runtime {
                         .map_err(|e| e.to_string())?;
                 }
                 if ["recording", "starting"].contains(&run["state"].as_str().unwrap_or("")) {
+                    // Jobs queued past the durable audio would fail read_exact forever.
+                    for job in jobs
+                        .iter_mut()
+                        .filter(|j| j.session == sid && j.run == rid && j.end > samples)
+                    {
+                        if job.start >= samples {
+                            fs::remove_file(self.job_path(job)).map_err(|e| e.to_string())?;
+                            job.end = job.start;
+                        } else {
+                            job.end = samples;
+                            self.save_job(job)?;
+                        }
+                    }
                     let final_end = s["segments"]
                         .as_array()
                         .into_iter()
@@ -1853,7 +1904,7 @@ impl Runtime {
                         .unwrap_or(0);
                     let queued_end = jobs
                         .iter()
-                        .filter(|j| j.session == sid && j.run == rid)
+                        .filter(|j| j.session == sid && j.run == rid && j.end > j.start)
                         .map(|j| j.end)
                         .max()
                         .unwrap_or(0);
@@ -1872,13 +1923,15 @@ impl Runtime {
                         })?;
                         start = end;
                     }
-                    self.close_run(
+                    if let Err(error) = self.close_run(
                         &sid,
                         &rid,
                         samples,
                         "interrupted",
                         Some("上次录音意外中断，已恢复可读音频；待处理转写将继续"),
-                    );
+                    ) {
+                        self.error(&sid, &format!("中断的录音无法恢复：{error}"), false);
+                    }
                 }
             }
         }
@@ -1941,38 +1994,11 @@ impl Runtime {
             "lecture" => crate::archive::export_lecture(&session, &self.root.join("audio"), &path),
             "wav" => {
                 let temp = path.with_extension(format!("{}.part", uid()));
-                let mut writer = hound::WavWriter::create(
-                    &temp,
-                    hound::WavSpec {
-                        channels: 1,
-                        sample_rate: 16000,
-                        bits_per_sample: 16,
-                        sample_format: hound::SampleFormat::Int,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-                for r in value["runs"].as_array().into_iter().flatten() {
-                    let rid = field(r, "id")?;
-                    let mut f =
-                        File::open(self.run_path(&sid, &rid)?).map_err(|e| e.to_string())?;
-                    let mut left = r["samples"].as_u64().unwrap_or(0) * 2;
-                    let mut buf = vec![0; 32768];
-                    while left > 0 {
-                        let n = left.min(buf.len() as u64) as usize;
-                        f.read_exact(&mut buf[..n]).map_err(|e| e.to_string())?;
-                        for b in buf[..n].chunks_exact(2) {
-                            writer
-                                .write_sample(i16::from_le_bytes([b[0], b[1]]))
-                                .map_err(|e| e.to_string())?;
-                        }
-                        left -= n as u64;
-                    }
+                let written = self.write_wav(&sid, &value, &temp, &path);
+                if written.is_err() {
+                    let _ = fs::remove_file(&temp);
                 }
-                writer.finalize().map_err(|e| e.to_string())?;
-                File::open(&temp)
-                    .and_then(|f| f.sync_all())
-                    .map_err(|e| e.to_string())?;
-                fs::rename(temp, &path).map_err(|e| e.to_string())?;
+                written?;
                 atomic_write(
                     &path.with_extension("gaps.json"),
                     serde_json::to_string_pretty(
@@ -1984,6 +2010,39 @@ impl Runtime {
             }
             _ => Err("导出格式无效".into()),
         }
+    }
+    fn write_wav(&self, sid: &str, value: &Value, temp: &Path, path: &Path) -> Result<(), String> {
+        let mut writer = hound::WavWriter::create(
+            temp,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        for r in value["runs"].as_array().into_iter().flatten() {
+            let rid = field(r, "id")?;
+            let mut f = File::open(self.run_path(sid, &rid)?).map_err(|e| e.to_string())?;
+            let mut left = r["samples"].as_u64().unwrap_or(0) * 2;
+            let mut buf = vec![0; 32768];
+            while left > 0 {
+                let n = left.min(buf.len() as u64) as usize;
+                f.read_exact(&mut buf[..n]).map_err(|e| e.to_string())?;
+                for b in buf[..n].chunks_exact(2) {
+                    writer
+                        .write_sample(i16::from_le_bytes([b[0], b[1]]))
+                        .map_err(|e| e.to_string())?;
+                }
+                left -= n as u64;
+            }
+        }
+        writer.finalize().map_err(|e| e.to_string())?;
+        File::open(temp)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| e.to_string())?;
+        fs::rename(temp, path).map_err(|e| e.to_string())
     }
     pub fn shutdown(&self) {
         self.exit.store(true, Ordering::SeqCst);
@@ -2166,6 +2225,41 @@ fn commit_cloud_update(
     }
     Ok(())
 }
+/// RMS a 20 ms recorder frame must exceed to count as speech.
+const SPEECH_RMS: f64 = 0.009;
+fn rms(samples: impl Iterator<Item = i16>) -> f64 {
+    let (sum, count) = samples.fold((0f64, 0usize), |(sum, count), sample| {
+        (sum + (sample as f64 / 32768.).powi(2), count + 1)
+    });
+    (sum / count.max(1) as f64).sqrt()
+}
+/// Near-silent audio makes the model hallucinate, so it is skipped unless some 20 ms frame is
+/// loud enough for the recorder to have called it speech.
+fn has_speech(pcm: &[u8]) -> bool {
+    pcm.chunks(640).any(|frame| {
+        rms(frame
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]])))
+            > SPEECH_RMS
+    })
+}
+/// Keeps segment and note anchors inside a run whose durable audio is shorter than published.
+fn clamp_run_ranges(session: &mut Value, rid: &str, samples: u64) {
+    for segment in session["segments"].as_array_mut().into_iter().flatten() {
+        if segment["runId"] == rid {
+            for key in ["startSample", "endSample"] {
+                if segment[key].as_u64().is_some_and(|value| value > samples) {
+                    segment[key] = json!(samples);
+                }
+            }
+        }
+    }
+    for note in session["notes"].as_array_mut().into_iter().flatten() {
+        if note["runId"] == rid && note["sample"].as_u64().is_some_and(|value| value > samples) {
+            note["sample"] = json!(samples);
+        }
+    }
+}
 fn wav_bytes(pcm: &[u8]) -> Vec<u8> {
     let mut b = Vec::with_capacity(pcm.len() + 44);
     b.extend(b"RIFF");
@@ -2268,13 +2362,7 @@ impl Archiver {
             .write_all(&bytes)
             .map_err(|e| format!("录音保存失败：{e}"))?;
         self.samples += pcm.len() as u64;
-        let rms = (pcm
-            .iter()
-            .map(|s| (*s as f64 / 32768.).powi(2))
-            .sum::<f64>()
-            / pcm.len().max(1) as f64)
-            .sqrt();
-        if rms > 0.009 {
+        if rms(pcm.iter().copied()) > SPEECH_RMS {
             self.voiced = true;
             self.silence = 0;
         } else {
@@ -2286,7 +2374,10 @@ impl Archiver {
         if final_now {
             self.finalize_segment()?;
         } else if self.voiced && length >= 32000 && self.samples - self.last_partial >= 32000 {
-            self.file.flush().map_err(|e| e.to_string())?;
+            // enqueue publishes run.samples; it must never run ahead of what survives power loss.
+            self.file
+                .sync_all()
+                .map_err(|e| format!("录音写盘失败：{e}"))?;
             self.runtime.enqueue(self.job(false))?;
             self.last_partial = self.samples;
         }
@@ -2343,7 +2434,6 @@ struct Model {
     port: u16,
     key: String,
     client: reqwest::blocking::Client,
-    key_file: PathBuf,
 }
 fn model_files_present(settings: &Value) -> bool {
     ["executable", "modelPath"]
@@ -2487,16 +2577,47 @@ fn same_model_settings(left: &Value, right: &Value) -> bool {
     .iter()
     .all(|key| left[*key] == right[*key])
 }
+const QWEN_SERVER_LOG: &str = "qwen-server.log";
+const MODEL_CONNECTION_LOST: &str = "本地模型连接中断；已保存的音频可重试转写";
+/// Names the exit code and the last error llama-server printed, so a user's screenshot is diagnosable.
+fn early_exit_message(code: Option<i32>, log_path: &Path) -> String {
+    let log = fs::read_to_string(log_path).unwrap_or_default();
+    let mut message = "本地识别程序提前退出".to_owned();
+    if let Some(code) = code {
+        message.push_str(&format!("（代码 0x{:08X}）", code as u32));
+    }
+    let detail = log
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("warning:"))
+        .map(|line| line.chars().take(200).collect::<String>());
+    match detail {
+        Some(line) => message.push_str(&format!("：{line}")),
+        None => message.push_str("，请检查模型与程序是否匹配"),
+    }
+    message.push_str(&format!("。详细日志：{}", log_path.display()));
+    message
+}
 impl Drop for Model {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        let _ = fs::remove_file(&self.key_file);
     }
 }
 impl Model {
+    fn server_alive(&self) -> bool {
+        if self.settings["engine"] == "whisper" {
+            return true;
+        }
+        self.child
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+    }
     fn load(
         settings: Value,
         root: &Path,
@@ -2523,7 +2644,6 @@ impl Model {
             port: 0,
             key: uid(),
             client,
-            key_file: root.join(format!("worker-{}.key", uid())),
         };
         if loaded.settings["engine"] == "whisper" {
             return Ok(loaded);
@@ -2535,17 +2655,6 @@ impl Model {
         let socket = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
         loaded.port = socket.local_addr().map_err(|e| e.to_string())?.port();
         drop(socket);
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&loaded.key_file).map_err(|e| e.to_string())?;
-        file.write_all(loaded.key.as_bytes())
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
         let mut process = crate::native_process::command(exe);
         process
             .args([
@@ -2557,9 +2666,7 @@ impl Model {
                 "127.0.0.1",
                 "--port",
                 &loaded.port.to_string(),
-                "--api-key-file",
             ])
-            .arg(&loaded.key_file)
             .args([
                 "--no-webui",
                 "--jinja",
@@ -2569,12 +2676,23 @@ impl Model {
                 "4096",
                 "-np",
                 "1",
+                // Each ASR request is a fresh audio prompt, so the prompt cache never hits; its
+                // default 8 GiB budget only copies KV state and grows memory on small laptops.
+                "--cache-ram",
+                "0",
             ])
+            // The key travels in the environment: llama.cpp opens --api-key-file with the ANSI code page
+            // on Windows, which fails under non-ASCII user profile paths.
+            .env("LLAMA_API_KEY", &loaded.key)
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(
+                File::create(root.join(QWEN_SERVER_LOG))
+                    .map(Stdio::from)
+                    .unwrap_or_else(|_| Stdio::null()),
+            );
         *loaded.child.lock().unwrap() = Some(
             process
-                .spawn()
+                .spawn_tied()
                 .map_err(|e| format!("无法启动本地模型：{e}"))?,
         );
         let start = Instant::now();
@@ -2582,7 +2700,7 @@ impl Model {
             if exit.load(Ordering::SeqCst) {
                 return Err("应用正在退出".into());
             }
-            if loaded
+            if let Some(status) = loaded
                 .child
                 .lock()
                 .unwrap()
@@ -2590,9 +2708,8 @@ impl Model {
                 .ok_or("模型已停止")?
                 .try_wait()
                 .map_err(|e| e.to_string())?
-                .is_some()
             {
-                return Err("本地识别程序提前退出，请检查模型与程序是否匹配".into());
+                return Err(early_exit_message(status.code(), &root.join(QWEN_SERVER_LOG)));
             }
             if loaded
                 .client
@@ -2629,7 +2746,7 @@ impl Model {
                 .arg(self.settings["language"].as_str().unwrap_or("auto"))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .spawn()
+                .spawn_tied()
                 .map_err(|e| e.to_string())?;
             *self.child.lock().unwrap() = Some(child);
             let start = Instant::now();
@@ -2692,7 +2809,7 @@ impl Model {
             .bearer_auth(&self.key)
             .json(&payload)
             .send()
-            .map_err(|_| "本地模型连接中断；已保存的音频可重试转写")?;
+            .map_err(|_| MODEL_CONNECTION_LOST)?;
         if !response.status().is_success() {
             return Err(format!("本地模型返回 {}，音频已保留", response.status()));
         }
@@ -2787,6 +2904,19 @@ fn split_final_text(job: &Job, text: &str) -> Vec<FinalTextSegment> {
         .collect()
 }
 
+/// Splitting would leave the human text on the first sentence as a conflict and duplicate the
+/// rest as new machine segments, so an edited or open segment is finalised whole.
+fn human_owned(session: &crate::domain::Session, segment_id: &str) -> bool {
+    session
+        .segments
+        .iter()
+        .any(|segment| segment.id == segment_id && !segment.history.is_empty())
+        || session
+            .drafts
+            .iter()
+            .any(|draft| draft.segment_id == segment_id && draft.state == "open")
+}
+
 fn natural_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut start = 0usize;
@@ -2814,6 +2944,22 @@ fn natural_sentences(text: &str) -> Vec<String> {
                 }
                 boundary = next_offset + next_character.len_utf8();
                 next += 1;
+            }
+            // "3.14", "e.g. this": a period only ends a sentence before whitespace (or the end)
+            // and a start that is not a digit or lowercase letter.
+            if character == '.'
+                && (characters
+                    .get(next)
+                    .is_some_and(|(_, next_character)| !next_character.is_whitespace())
+                    || characters[next..]
+                        .iter()
+                        .find(|(_, next_character)| !next_character.is_whitespace())
+                        .is_some_and(|(_, next_character)| {
+                            next_character.is_ascii_digit() || next_character.is_lowercase()
+                        }))
+            {
+                index += 1;
+                continue;
             }
         }
         while let Some((next_offset, next_character)) = characters.get(next).copied() {
@@ -2848,6 +2994,21 @@ fn is_sentence_closer(character: char) -> bool {
     )
 }
 
+/// Called once no local job is pending; permanently failed jobs keep the session in error so a
+/// later success cannot hide them.
+fn settle_local_inference(session: &mut Value, failed: usize) {
+    session["inferenceState"] = json!(if failed > 0 { "error" } else { "ready" });
+    let gaps = session["gaps"].as_array().is_some_and(|g| !g.is_empty());
+    if failed > 0 {
+        if session["recordingState"] != "error" {
+            session["error"] = json!(format!("有 {failed} 段音频转写失败，可重试"));
+        }
+    } else if session["recordingState"] != "error" && !gaps {
+        session["error"] = Value::Null;
+    } else if gaps {
+        session["error"] = json!("检测到音频缺口，已保留时间位置和缺口记录");
+    }
+}
 fn worker_loop(weak: Weak<Runtime>) {
     let mut model: Option<Model> = None;
     let mut attempted_settings = Value::Null;
@@ -2978,31 +3139,35 @@ fn worker_loop(weak: Weak<Runtime>) {
                 return Err("转写将在下次打开时继续".into());
             }
             let wav = runtime.wav(&job)?;
-            let pcm = &wav[44..];
-            let energy = pcm
-                .chunks_exact(2)
-                .map(|p| (i16::from_le_bytes([p[0], p[1]]) as f64 / 32768.).powi(2))
-                .sum::<f64>()
-                / (pcm.len() / 2).max(1) as f64;
-            let text = if energy.sqrt() < 0.003 {
-                String::new()
-            } else {
+            let text = if has_speech(&wav[44..]) {
                 model
                     .as_mut()
                     .unwrap()
                     .transcribe(&wav, &runtime.root, &request_settings)?
+            } else {
+                String::new()
             };
-            let state = runtime.value()?;
-            if state["workerEpoch"].as_u64().unwrap_or(1) != epoch {
+            let mut store = runtime.store.lock().map_err(|_| "数据写入器不可用")?;
+            let current = store.snapshot();
+            if current.worker_epoch != epoch {
                 return Err("STALE_WORKER_EPOCH".into());
             }
-            let revision = runtime.session(&job.session)?["segments"]
-                .as_array()
-                .and_then(|s| s.iter().find(|s| s["id"] == job.id))
-                .and_then(|s| s["machineRevision"].as_u64())
-                .unwrap_or(0)
+            let session = current
+                .sessions
+                .iter()
+                .find(|session| session.id == job.session)
+                .ok_or("课程不存在")?;
+            let revision = session
+                .segments
+                .iter()
+                .find(|segment| segment.id == job.id)
+                .map_or(0, |segment| segment.machine_revision)
                 + 1;
-            let final_segments = split_final_text(&job, &text);
+            let final_segments = if human_owned(session, &job.id) {
+                Vec::new()
+            } else {
+                split_final_text(&job, &text)
+            };
             if job.final_result && final_segments.len() > 1 {
                 let segments: Vec<Value> = final_segments
                     .iter()
@@ -3017,12 +3182,14 @@ fn worker_loop(weak: Weak<Runtime>) {
                         })
                     })
                     .collect();
-                runtime.store.lock().map_err(|_|"数据写入器不可用")?.dispatch(json!({"type":"machineSegments","commandId":uid(),"sessionId":job.session,"runId":job.run,"segments":segments,"workerEpoch":epoch}))?;
+                store.dispatch(json!({"type":"machineSegments","commandId":uid(),"sessionId":job.session,"runId":job.run,"segments":segments,"workerEpoch":epoch}))?;
+                drop(store);
                 for segment in &final_segments {
                     runtime.schedule_auto_polish(&job.session, &segment.id);
                 }
             } else {
-                runtime.store.lock().map_err(|_|"数据写入器不可用")?.dispatch(json!({"type":"machine","commandId":uid(),"sessionId":job.session,"segmentId":job.id,"runId":job.run,"startSample":job.start,"endSample":job.end,"text":text,"revision":revision,"workerEpoch":epoch,"final":job.final_result}))?;
+                store.dispatch(json!({"type":"machine","commandId":uid(),"sessionId":job.session,"segmentId":job.id,"runId":job.run,"startSample":job.start,"endSample":job.end,"text":text,"revision":revision,"workerEpoch":epoch,"final":job.final_result}))?;
+                drop(store);
                 if job.final_result {
                     runtime.schedule_auto_polish(&job.session, &job.id);
                 }
@@ -3034,29 +3201,30 @@ fn worker_loop(weak: Weak<Runtime>) {
                 if job.final_result {
                     let _ = fs::remove_file(runtime.job_path(&job));
                 }
-                let has_pending = runtime.jobs().unwrap_or_default().iter().any(|j| {
-                    j.session == job.session
-                        && !j.failed
-                        && !runtime.job_is_cloud(j).unwrap_or(false)
-                });
-                if !has_pending {
+                let local: Vec<Job> = runtime
+                    .jobs()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|j| {
+                        j.session == job.session && !runtime.job_is_cloud(j).unwrap_or(false)
+                    })
+                    .collect();
+                let failed = local.iter().filter(|j| j.failed).count();
+                if failed == local.len() {
                     let _ = runtime.update(&job.session, |s| {
-                        s["inferenceState"] = json!("ready");
-                        if s["recordingState"] != "error"
-                            && s["gaps"].as_array().is_some_and(|g| g.is_empty())
-                        {
-                            s["error"] = Value::Null;
-                        } else if s["gaps"].as_array().is_some_and(|g| !g.is_empty()) {
-                            s["error"] = json!("检测到音频缺口，已保留时间位置和缺口记录");
-                        }
+                        settle_local_inference(s, failed);
                         Ok(())
                     });
                 }
             }
             Err(e) => {
-                model = None;
-                *runtime.model_status.lock().unwrap() =
-                    json!({"state":"error","settings":settings,"error":e});
+                // A job-level failure (deleted session, unreadable WAV, HTTP 5xx) leaves a healthy
+                // server; reloading ~1 GB of weights for it only stalls the queue.
+                if !model.as_ref().is_some_and(Model::server_alive) || e == MODEL_CONNECTION_LOST {
+                    model = None;
+                    *runtime.model_status.lock().unwrap() =
+                        json!({"state":"error","settings":settings,"error":e});
+                }
                 if e == "STALE_WORKER_EPOCH" {
                     if !job.final_result {
                         let _ = runtime.enqueue(job);
@@ -3083,6 +3251,17 @@ fn worker_loop(weak: Weak<Runtime>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn early_exit_names_code_and_last_server_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join(QWEN_SERVER_LOG);
+        fs::write(&log, "warning: no usable GPU found\nload_model: failed to load mmproj\n\nwarning: consult docs\n").unwrap();
+        let message = early_exit_message(Some(-1073740791), &log);
+        assert!(message.starts_with("本地识别程序提前退出（代码 0xC0000409）：load_model: failed to load mmproj"));
+        assert!(message.ends_with(&log.display().to_string()));
+        let missing = early_exit_message(None, &temp.path().join("absent.log"));
+        assert!(missing.contains("请检查模型与程序是否匹配"));
+    }
     use crate::soniox::Update;
     fn isolated_runtime(root: &Path) -> Arc<Runtime> {
         fs::create_dir_all(root.join("jobs")).unwrap();
@@ -3620,6 +3799,113 @@ mod tests {
         assert_eq!(runtime.jobs().unwrap().len(), 1);
     }
     #[test]
+    fn recovery_clamps_ranges_published_ahead_of_durable_audio() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let sid = session(&runtime, "power loss");
+        let rid = runtime.add_run(&sid, "microphone").unwrap();
+        let path = runtime.run_path(&sid, &rid).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, vec![0u8; 32_000]).unwrap();
+        let partial = |start, end, final_result| Job {
+            id: format!("{rid}_{start}"),
+            session: sid.clone(),
+            run: rid.clone(),
+            start,
+            end,
+            final_result,
+            attempts: 0,
+            failed: false,
+        };
+        runtime.enqueue(partial(0, 48_000, false)).unwrap();
+        let epoch = runtime.snapshot().unwrap().worker_epoch;
+        runtime.dispatch(json!({"type":"machine","commandId":uid(),"sessionId":sid,"segmentId":format!("{rid}_0"),"runId":rid,"startSample":0,"endSample":48_000,"text":"unsynced","revision":1,"workerEpoch":epoch,"final":false})).unwrap();
+        runtime.dispatch(json!({"type":"addNote","commandId":uid(),"sessionId":sid,"segmentId":format!("{rid}_0"),"kind":"note","text":"n"})).unwrap();
+        runtime
+            .update(&sid, |s| {
+                s["notes"][0]["sample"] = json!(40_000);
+                Ok(())
+            })
+            .unwrap();
+        runtime.save_job(&partial(8_000, 48_000, true)).unwrap();
+        runtime.save_job(&partial(20_000, 48_000, true)).unwrap();
+
+        runtime.recover().unwrap();
+        let session = runtime.session(&sid).unwrap();
+        assert_eq!(session["runs"][0]["state"], "interrupted");
+        assert_eq!(session["runs"][0]["samples"], 16_000);
+        assert_eq!(session["segments"][0]["endSample"], 16_000);
+        assert_eq!(session["notes"][0]["sample"], 16_000);
+        assert_eq!(session["recordingState"], "error");
+        let jobs = runtime.jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!((jobs[0].start, jobs[0].end), (8_000, 16_000));
+    }
+    #[test]
+    fn pause_keeps_a_capture_failure_recorded_while_closing() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let sid = session(&runtime, "device lost");
+        let rid = runtime.add_run(&sid, "microphone").unwrap();
+        runtime
+            .update(&sid, |session| {
+                session["recordingState"] = json!("recording");
+                Ok(())
+            })
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (flag, closing, session_id) = (stop.clone(), runtime.clone(), sid.clone());
+        let thread = thread::spawn(move || {
+            while !flag.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(5));
+            }
+            closing
+                .close_run(&session_id, &rid, 0, "interrupted", Some("音频源已断开"))
+                .unwrap();
+        });
+        *runtime.capture.lock().unwrap() = Some(Recording {
+            session: sid.clone(),
+            stop,
+            thread,
+        });
+        runtime
+            .dispatch(json!({"type":"pauseRecording","commandId":uid(),"sessionId":sid.clone()}))
+            .unwrap();
+        let session = runtime.session(&sid).unwrap();
+        assert_eq!(session["recordingState"], "error");
+        assert_eq!(session["error"], "音频源已断开");
+    }
+    #[test]
+    fn switching_to_soniox_waits_for_pending_local_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let sid = session(&runtime, "switch");
+        let rid = runtime.add_run(&sid, "microphone").unwrap();
+        let mut job = Job {
+            id: format!("{rid}_0"),
+            session: sid,
+            run: rid,
+            start: 0,
+            end: 16_000,
+            final_result: true,
+            attempts: 0,
+            failed: false,
+        };
+        runtime.save_job(&job).unwrap();
+        let mut settings = runtime.snapshot().unwrap().settings;
+        settings.engine = "soniox".into();
+        let switch = json!({"type":"settings","commandId":uid(),"settings":settings});
+        assert!(runtime
+            .dispatch(switch.clone())
+            .unwrap_err()
+            .contains("1 段"));
+        assert_eq!(runtime.snapshot().unwrap().settings.engine, "qwen");
+        job.failed = true;
+        runtime.save_job(&job).unwrap();
+        runtime.dispatch(switch).unwrap();
+        assert_eq!(runtime.snapshot().unwrap().settings.engine, "soniox");
+    }
+    #[test]
     fn unprepared_model_cannot_open_capture_device() {
         let temp = tempfile::tempdir().unwrap();
         let runtime = isolated_runtime(temp.path());
@@ -3669,7 +3955,7 @@ mod tests {
         let runtime = isolated_runtime(temp.path());
         let sid = session(&runtime, "qwen liveness");
         let settings = serde_json::to_value(runtime.snapshot().unwrap().settings).unwrap();
-        let mut exited = Command::new(std::env::current_exe().unwrap())
+        let mut exited = std::process::Command::new(std::env::current_exe().unwrap())
             .arg("--list")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -4025,6 +4311,74 @@ mod tests {
         assert_eq!(segments.last().unwrap().end, 12);
         assert!(segments.windows(2).all(|pair| pair[0].end == pair[1].start));
         assert!(segments.iter().all(|segment| segment.end >= segment.start));
+    }
+
+    #[test]
+    fn periods_inside_numbers_and_abbreviations_do_not_split_sentences() {
+        assert_eq!(
+            natural_sentences("Pi is 3.14 roughly. Use e.g. a circle. Then stop."),
+            ["Pi is 3.14 roughly.", "Use e.g. a circle.", "Then stop."]
+        );
+        assert_eq!(
+            natural_sentences("Version 2. 5 more items."),
+            ["Version 2. 5 more items."]
+        );
+        assert_eq!(
+            natural_sentences("He said \"done.\" Next one"),
+            ["He said \"done.\"", "Next one"]
+        );
+        assert_eq!(
+            natural_sentences("第一句。第二句！第三句？end"),
+            ["第一句。", "第二句！", "第三句？", "end"]
+        );
+    }
+
+    #[test]
+    fn edited_or_open_segments_are_finalised_without_splitting() {
+        let mut state = State::default();
+        crate::domain::apply_command(
+            &mut state,
+            &json!({"type":"createSession","title":"Split","mode":"live"}),
+        )
+        .unwrap();
+        let sid = state.selected_session_id.clone().unwrap();
+        crate::domain::apply_command(&mut state, &json!({"type":"machine","sessionId":sid,"segmentId":"r_0","runId":"r","startSample":0,"endSample":32000,"text":"First part","revision":1,"workerEpoch":0,"final":false})).unwrap();
+        assert!(!human_owned(&state.sessions[0], "r_0"));
+        crate::domain::apply_command(
+            &mut state,
+            &json!({"type":"beginEdit","sessionId":sid,"segmentId":"r_0"}),
+        )
+        .unwrap();
+        assert!(human_owned(&state.sessions[0], "r_0"));
+        let draft = state.sessions[0].drafts[0].id.clone();
+        crate::domain::apply_command(&mut state, &json!({"type":"commitEdit","sessionId":sid,"draftId":draft,"text":"First part, edited","expectedUserSeq":0})).unwrap();
+        assert!(human_owned(&state.sessions[0], "r_0"));
+        assert!(!human_owned(&state.sessions[0], "other"));
+    }
+
+    #[test]
+    fn silence_below_the_recorder_speech_threshold_skips_the_model() {
+        let quiet: Vec<u8> = (0..16_000)
+            .flat_map(|index| (if index % 2 == 0 { 200i16 } else { -200 }).to_le_bytes())
+            .collect();
+        assert!(!has_speech(&quiet));
+        let mut voiced = quiet.clone();
+        for sample in voiced[6400..7040].chunks_exact_mut(2) {
+            sample.copy_from_slice(&2000i16.to_le_bytes());
+        }
+        assert!(has_speech(&voiced));
+    }
+
+    #[test]
+    fn permanently_failed_local_jobs_stay_visible_after_later_success() {
+        let mut session =
+            json!({"recordingState":"stopped","gaps":[],"error":null,"inferenceState":"running"});
+        settle_local_inference(&mut session, 2);
+        assert_eq!(session["inferenceState"], "error");
+        assert_eq!(session["error"], "有 2 段音频转写失败，可重试");
+        settle_local_inference(&mut session, 0);
+        assert_eq!(session["inferenceState"], "ready");
+        assert!(session["error"].is_null());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "name": "lectureedit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "windows:doctor": "pwsh -NoProfile -File ./scripts/windows/Test-WindowsBuildEnvironment.ps1",
     "windows:build": "pwsh -NoProfile -File ./scripts/windows/Build-Windows.ps1",
     "windows:audit": "node ./scripts/windows/audit-windows.mjs",
-    "windows:preflight-test": "node --test ./scripts/windows/pe.test.mjs ./scripts/windows/audit.test.mjs"
+    "windows:preflight-test": "node --test ./scripts/windows/pe.test.mjs ./scripts/windows/audit.test.mjs",
+    "mac:release": "zsh ./scripts/macos/build-release.sh"
   },
   "dependencies": {
     "@floating-ui/react": "0.27.20",

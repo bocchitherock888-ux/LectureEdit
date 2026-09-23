@@ -44,3 +44,4 @@ app/src-tauri/resources/licenses/
 app/native/bin/
 app/native/macos-system-audio/bin/
 app/native/windows-loopback/target/
+app/dist-release/

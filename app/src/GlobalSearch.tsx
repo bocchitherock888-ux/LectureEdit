@@ -1,5 +1,5 @@
 import { shortcutLabel } from './platform';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { FloatingFocusManager, FloatingOverlay, FloatingPortal, useDismiss, useFloating, useInteractions, useRole } from '@floating-ui/react';
 import { ArrowUpRight, FileText, Folder, Play, Search, X } from 'lucide-react';
 import type { Project, Session } from './types';
@@ -36,7 +36,8 @@ export function GlobalSearch({ open, sessions, projects, onClose, onNavigate }: 
   const dismiss = useDismiss(context, { enabled: !busy, outsidePressEvent: 'mousedown' });
   const role = useRole(context, { role: 'dialog' });
   const { getFloatingProps } = useInteractions([dismiss, role]);
-  const results = useMemo(() => searchLibrary(sessions, projects, query), [sessions, projects, query]);
+  const deferredQuery = useDeferredValue(query);
+  const results = useMemo(() => open && deferredQuery.trim() ? searchLibrary(sessions, projects, deferredQuery) : [], [open, sessions, projects, deferredQuery]);
   const visible = results.slice(0, 100);
   const selectedIndex = Math.min(active, Math.max(0, visible.length - 1));
   const busyRef = useRef(false);
@@ -65,12 +66,12 @@ export function GlobalSearch({ open, sessions, projects, onClose, onNavigate }: 
           }} />
           <button aria-label="关闭搜索" disabled={busy} onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="library-search-summary" role="status">{query.trim() ? `找到 ${results.length} 处${results.length > 100 ? ' · 显示前 100 处，请增加关键词缩小范围' : ''}` : '所有课程 · 转写与课堂资料'}</div>
+        <div className="library-search-summary" role="status">{deferredQuery.trim() ? `找到 ${results.length} 处${results.length > 100 ? ' · 显示前 100 处，请增加关键词缩小范围' : ''}` : '所有课程 · 转写与课堂资料'}</div>
         <div id={resultsId} role={visible.length ? 'grid' : undefined} className="library-search-results" aria-label="搜索结果" aria-busy={busy}>
-          {!query.trim() ? <div className="library-search-empty"><Search size={28} /><h3>找回课堂上讲过的内容</h3><p>试着输入 opportunity cost、demand curve，或课程名称。</p></div> : !results.length ? <div className="library-search-empty"><h3>没有找到相关内容</h3><p>换一个关键词，或试试英文课堂中的原词。</p></div> : visible.map((result, index) => <div key={result.id} id={`${resultsId}-${index}`} role="row" aria-selected={index === selectedIndex} data-search-index={index} className={`library-search-result ${index === selectedIndex ? 'is-active' : ''}`} onMouseEnter={() => setActive(index)}>
+          {!deferredQuery.trim() ? <div className="library-search-empty"><Search size={28} /><h3>找回课堂上讲过的内容</h3><p>试着输入 opportunity cost、demand curve，或课程名称。</p></div> : !results.length ? <div className="library-search-empty"><h3>没有找到相关内容</h3><p>换一个关键词，或试试英文课堂中的原词。</p></div> : visible.map((result, index) => <div key={result.id} id={`${resultsId}-${index}`} role="row" aria-selected={index === selectedIndex} data-search-index={index} className={`library-search-result ${index === selectedIndex ? 'is-active' : ''}`} onMouseEnter={() => setActive(index)}>
             <div role="gridcell" className="library-search-main-cell"><button className="library-search-open" disabled={busy} onFocus={() => setActive(index)} onClick={() => void navigate(result, false)}>
               <span className="library-search-location">{result.projectTitle && <span><Folder size={12} />{result.projectTitle}</span>}<span>{result.title}</span><time>{new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric' }).format(result.createdAt)}</time></span>
-              <span className="library-search-excerpt"><MarkedText text={searchExcerpt(result.text, query)} query={query} /></span>
+              <span className="library-search-excerpt"><MarkedText text={searchExcerpt(result.text, deferredQuery)} query={deferredQuery} /></span>
               <span className="library-search-anchor">{result.kind === 'note' ? '课堂资料' : result.kind === 'title' ? <><FileText size={12} />课堂记录</> : '转写'}{result.startMs !== null && <> · {time(result.startMs)}</>}<ArrowUpRight size={13} /></span>
             </button></div>
             {result.segmentId && <div role="gridcell"><button className="library-search-play" disabled={busy} onClick={() => void navigate(result, true)} aria-label={`回放 ${result.title} ${time(result.startMs ?? 0)}`} title="定位并回放"><Play size={15} fill="currentColor" /></button></div>}

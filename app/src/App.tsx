@@ -13,17 +13,17 @@ import { animate } from 'motion';
 import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { adapter } from './bridge';
-import { shortcutLabel, canExportNativePdf, PDF_PLATFORM_NOTICE } from './platform';
+import { shortcutLabel, canExportNativePdf, isPrimaryShortcut, PDF_PLATFORM_NOTICE } from './platform';
 import { FormulaRecognitionPanel, TranscriptAssist } from './DeepSeekTools';
 import { GlobalSearch, type SearchResult } from './GlobalSearch';
-import { SettingsDialog } from './SettingsDialog';
+import { modelStoppedRunning, SettingsDialog } from './SettingsDialog';
 import { changedTranscriptSegments, persistTranscriptEdits, transcriptTextMap, TranscriptSaveError, type TranscriptTextMap } from './documentEditing';
 import { sentencePlaybackSlices, type SentencePlaybackSlice } from './sentencePlayback';
 import { shouldPauseTranscriptFollow, transcriptFollowTarget } from './transcriptFollow';
 import type { AppState, Draft, Note, NoteKind, Project, RuntimeInfo, Segment, Session } from './types';
 import { commandId } from './types';
 
-type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'restored' | 'error';
+type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'restored' | 'error' | 'commitError';
 type Modal = 'new' | 'settings' | 'review' | null;
 
 function SessionMenu({ session, projects, open, onOpenChange, onMove, onRename }: {
@@ -104,7 +104,7 @@ function RecordGlyph({ state }: { state: 'ready' | 'starting' | 'recording' | 'p
   return <span className={`record-glyph is-${state}`} aria-hidden="true"><span /></span>;
 }
 
-function EmptyTranscriptState({ session, samples, demo, cloud, legacyEngine, retryDisabled, runtime, onStart, onImport, onRetry, onPrepare, onSetup }: { session: Session; samples: number; demo: boolean; cloud: boolean; legacyEngine: boolean; retryDisabled: boolean; runtime: RuntimeInfo; onStart: () => void; onImport: () => void; onRetry: () => void; onPrepare: () => void; onSetup: () => void }) {
+function EmptyTranscriptState({ session, samples, demo, cloud, cloudReady, legacyEngine, retryDisabled, runtime, onStart, onImport, onRetry, onPrepare, onSetup }: { session: Session; samples: number; demo: boolean; cloud: boolean; cloudReady: boolean; legacyEngine: boolean; retryDisabled: boolean; runtime: RuntimeInfo; onStart: () => void; onImport: () => void; onRetry: () => void; onPrepare: () => void; onSetup: () => void }) {
   const captureActive = ['starting', 'recording', 'paused', 'stopping'].includes(session.recordingState);
   const processing = ['loading', 'running', 'catching_up'].includes(session.inferenceState);
   const hasAudio = samples > 0 || session.runs.length > 0;
@@ -116,10 +116,11 @@ function EmptyTranscriptState({ session, samples, demo, cloud, legacyEngine, ret
   const installed = runtime.modelInstalled ?? runtime.modelReady ?? false;
   const modelState = runtime.modelState ?? (runtime.modelReady ? 'ready' : 'unloaded');
   if (!demo && legacyEngine) return <div className="empty-state model-waiting"><SettingsIcon size={31} /><h2>请选择实时转写引擎</h2><p>当前课程保留全部录音。切换到 Qwen 本地识别或 Soniox 云端实时识别后即可继续转写。</p>{hasAudio && <div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>已保存到本机</span></div>}<button className="secondary-button" onClick={onSetup}>打开转写设置</button></div>;
-  if (!demo && !runtime.modelReady) {
+  if (!demo && cloud && !cloudReady) return <div className="empty-state model-waiting"><Cloud size={31} /><h2>需要配置云端转写</h2><p>{hasAudio ? '录音已安全保存。' : ''}在设置中填写 Soniox API Key 并确认云端发送音频后，即可开始录音与转写。</p>{hasAudio && <div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>已保存到本机</span></div>}<button className="secondary-button" onClick={onSetup}>打开云端转写设置</button></div>;
+  if (!demo && !cloud && !runtime.modelReady) {
     const loading = modelState === 'loading';
     const failed = modelState === 'error';
-    return <div className="empty-state model-waiting"><SettingsIcon size={31} /><h2>{loading ? '正在准备本地模型' : failed ? '本地模型准备失败' : installed ? '本地模型尚未准备' : '需要本地转写模型'}</h2><p>{failed && runtime.modelError ? runtime.modelError : loading ? '模型加载完成后即可开始录音。' : hasAudio ? '录音已安全保存。准备好模型后可以继续转写。' : installed ? '模型文件已安装，完成加载后即可开始录音。' : '下载并校验模型后，音频会留在这台电脑上完成转写。'}</p>{hasAudio && <div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>已保存到本机</span></div>}{!loading && <div>{installed && <button className="primary-button" onClick={onPrepare}>{failed ? '重试准备模型' : '准备本地模型'}</button>}<button className="secondary-button" onClick={onSetup}>{installed ? '打开模型设置' : '下载本地模型'}</button></div>}</div>;
+    return <div className="empty-state model-waiting"><SettingsIcon size={31} /><h2>{loading ? '正在准备本地模型' : failed ? modelStoppedRunning(runtime.modelError) ? '本地模型已停止运行' : '本地模型准备失败' : installed ? '本地模型尚未准备' : '需要本地转写模型'}</h2><p>{failed && runtime.modelError ? runtime.modelError : loading ? '模型加载完成后即可开始录音。' : hasAudio ? '录音已安全保存。准备好模型后可以继续转写。' : installed ? '模型文件已安装，完成加载后即可开始录音。' : '下载并校验模型后，音频会留在这台电脑上完成转写。'}</p>{hasAudio && <div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>已保存到本机</span></div>}{!loading && <div>{installed && <button className="primary-button" onClick={onPrepare}>{failed ? '重试准备模型' : '准备本地模型'}</button>}<button className="secondary-button" onClick={onSetup}>{installed ? '打开模型设置' : '下载本地模型'}</button></div>}</div>;
   }
   if (hasAudio && processing) return <div className="empty-state processing-state"><Clock3 size={31} /><h2>录音已结束，正在处理</h2><p>{cloud ? '云端正在完成转写' : inferenceLabel[session.inferenceState]}。新的转写块会自动显示在这里。</p><div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>录音已保存在本机</span></div></div>;
   if (hasAudio) return <div className="empty-state"><FileAudio size={31} /><h2>录音已结束</h2><p>当前录音还没有生成可显示的转写。音频已经保存在本机，可以重新尝试转写。</p><div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>录音已保存在本机</span></div><button className="secondary-button" disabled={retryDisabled} onClick={onRetry}><ArchiveRestore size={16} /> {retryDisabled ? '另一课程正在转写' : '重试转写'}</button></div>;
@@ -135,10 +136,12 @@ function Formula({ latex }: { latex: string }) {
 }
 
 function NoteBlock({ note, onRemove }: { note: Note; onRemove?: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => { if (!confirming) return; const timer = window.setTimeout(() => setConfirming(false), 4000); return () => clearTimeout(timer); }, [confirming]);
   const meta: [string, typeof StickyNote] = note.kind === 'example' ? ['例子', Quote] : note.kind === 'formula' ? ['公式', Sigma] : note.kind === 'image' ? ['图片', ImageIcon] : ['备注', StickyNote];
   const Mark = meta[1];
   return <section className={`note-block note-${note.kind}`} data-note={note.id}>
-    <header><span><Mark size={14} /> {meta[0]}</span>{note.sourceLabel && <span className="note-source">{note.sourceLabel}</span>}{onRemove && <IconButton label="移除课堂资料" onClick={onRemove}><X size={14} /></IconButton>}</header>
+    <header><span><Mark size={14} /> {meta[0]}</span>{note.sourceLabel && <span className="note-source">{note.sourceLabel}</span>}{onRemove && (confirming ? <button className="quiet-danger note-remove-confirm" autoFocus onBlur={() => setConfirming(false)} onClick={() => { setConfirming(false); onRemove(); }}>再点一次确认删除</button> : <IconButton label="移除课堂资料" onClick={() => setConfirming(true)}><X size={14} /></IconButton>)}</header>
     {note.kind === 'formula' ? <Formula latex={note.text} /> : note.kind === 'image' && note.imageData ? <><img src={note.imageData} alt={note.text || '课堂图片'} />{note.text && <p className="caption">{note.text}</p>}</> : <p>{note.text}</p>}
   </section>;
 }
@@ -203,7 +206,11 @@ function TranscriptBlock({ segment, active, playingKey, entering, query, compose
     if (appendedSuffix && slice.endOffset > previous.text.length) {
       const boundary = Math.max(slice.startOffset, previous.text.length);
       const pieces = streamingPieces(text.slice(boundary, slice.endOffset));
-      return <>{text.slice(slice.startOffset, boundary)}<span key={`${segment.machineRevision}-${boundary}`} className="stream-suffix">{pieces.map((piece, index) => <span className={`stream-token ${index === pieces.length - 1 ? 'is-last' : ''}`} style={{ animationDelay: `${Math.min(index, 6) * 30}ms` }} key={`${boundary + index}:${piece}`}>{piece}</span>)}</span></>;
+      // Whitespace stays outside the inline-block tokens; inside them it collapses and words run together mid-animation.
+      return <>{text.slice(slice.startOffset, boundary)}<span key={`${segment.machineRevision}-${boundary}`} className="stream-suffix">{pieces.map((piece, index) => {
+        const [, lead, word, trail] = /^(\s*)([\s\S]*?)(\s*)$/.exec(piece) ?? ['', '', piece, ''];
+        return <Fragment key={`${boundary + index}:${piece}`}>{lead}{word && <span className={`stream-token ${index === pieces.length - 1 ? 'is-last' : ''}`} style={{ animationDelay: `${Math.min(index, 10) * 22}ms` }}>{word}</span>}{trail}</Fragment>;
+      })}</span></>;
     }
     if (!query.trim()) return slice.text;
     const localIndex = slice.text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase());
@@ -298,9 +305,12 @@ function CourseSidebar({ projects, sessions, selectedId, expanded, revealProject
   useEffect(() => { if (!expanded) setMenu(null); }, [expanded]);
   useEffect(() => { if (revealProjectId) setOpenProjects(current => new Set(current).add(revealProjectId)); }, [revealProjectId]);
   const toggleProject = (projectId: string) => setOpenProjects(current => { const next = new Set(current); if (next.has(projectId)) next.delete(projectId); else next.add(projectId); return next; });
+  const [submittingProject, setSubmittingProject] = useState(false); const submittingProjectRef = useRef(false);
   const submitProject = async () => {
     const title = projectTitle.trim();
-    const project = title ? await onCreateProject(title) : null;
+    if (!title || submittingProjectRef.current) return;
+    submittingProjectRef.current = true; setSubmittingProject(true);
+    const project = await onCreateProject(title).finally(() => { submittingProjectRef.current = false; setSubmittingProject(false); });
     if (!project) return;
     setOpenProjects(current => new Set(current).add(project.id));
     setProjectTitle(''); setCreatingProject(false);
@@ -319,7 +329,7 @@ function CourseSidebar({ projects, sessions, selectedId, expanded, revealProject
     <button className="sidebar-search" aria-label="搜索所有课堂" title="搜索所有课堂" onClick={onSearch}><Search size={16} />{expanded && <span>搜索所有课堂</span>}{expanded && <kbd>{shortcutLabel('K')}</kbd>}</button>
     <nav>
       {expanded && <div className="sidebar-section-heading"><span>课堂记录</span><button aria-label="新建课程分组" title="新建课程分组" onClick={() => setCreatingProject(true)}><FolderPlus size={15} /></button></div>}
-      {creatingProject && expanded && <div className="project-create"><Folder size={15} /><input autoFocus value={projectTitle} aria-label="课程分组名称" placeholder="例如：Economics" onChange={event => setProjectTitle(event.target.value)} onBlur={(event) => { if (!projectTitle.trim() && !event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) setCreatingProject(false); }} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) void submitProject(); if (event.key === 'Escape') { setProjectTitle(''); setCreatingProject(false); } }} /><button aria-label="创建课程分组" title="创建课程分组" disabled={!projectTitle.trim()} onClick={() => void submitProject()}><Check size={14} /></button></div>}
+      {creatingProject && expanded && <div className="project-create"><Folder size={15} /><input autoFocus value={projectTitle} aria-label="课程分组名称" placeholder="例如：Economics" onChange={event => setProjectTitle(event.target.value)} onBlur={(event) => { if (!projectTitle.trim() && !event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) setCreatingProject(false); }} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) void submitProject(); if (event.key === 'Escape') { setProjectTitle(''); setCreatingProject(false); } }} /><button aria-label="创建课程分组" title="创建课程分组" disabled={!projectTitle.trim() || submittingProject} onClick={() => void submitProject()}><Check size={14} /></button></div>}
       {loose.map(row)}
       {projects.map(project => {
         const children = sessions.filter(session => session.projectId === project.id);
@@ -340,34 +350,55 @@ function CourseSidebar({ projects, sessions, selectedId, expanded, revealProject
 
 type SegmentRect = { left: number; top: number; width: number; height: number };
 
-function CorrectionPanel({ draft, segment, text, status, originRect, exiting, onText, onClose, onDiscard, onCommit, onUndo, onRedo, onPlay }: {
-  draft: Draft; segment: Segment; text: string; status: SaveStatus; originRect?: SegmentRect; exiting?: boolean; onText: (text: string) => void; onClose: () => void; onDiscard: () => void; onCommit: () => void; onUndo: () => void; onRedo: () => void; onPlay: () => void;
+const PANEL_SLIDE = 16;
+const FLIGHT_EASE = [0.32, 0.72, 0, 1] as const;
+
+function CorrectionPanel({ draft, segment, text, status, commitError, originRect, exiting, onText, onClose, onDiscard, onCommit, onUndo, onRedo, onPlay, onReview }: {
+  draft: Draft; segment: Segment; text: string; status: SaveStatus; commitError: string; originRect?: SegmentRect; exiting?: boolean; onText: (text: string) => void; onClose: () => void; onDiscard: () => void; onCommit: () => void; onUndo: () => void; onRedo: () => void; onPlay: () => void; onReview: () => void;
 }) {
   const composing = useRef(false);
   const reduceMotion = useReducedMotion();
-  const targetRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLTextAreaElement>(null);
   const [targetRect, setTargetRect] = useState<SegmentRect | null>(null);
   const [flightDone, setFlightDone] = useState(!originRect || Boolean(reduceMotion));
-  useLayoutEffect(() => { const rect = targetRef.current?.getBoundingClientRect(); if (rect) setTargetRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }); }, []);
-  useEffect(() => { if (!originRect || reduceMotion || exiting) return; const timer = window.setTimeout(() => setFlightDone(true), 430); return () => clearTimeout(timer); }, [exiting, originRect, reduceMotion]);
-  const compactOrigin = originRect ? { ...originRect, width: Math.min(originRect.width, 420), height: Math.min(originRect.height, 110) } : null;
-  const compactTarget = targetRect ? { ...targetRect, height: Math.min(targetRect.height, 118) } : null;
-  const flight = compactOrigin && compactTarget && !reduceMotion && (!flightDone || exiting) ? <FloatingPortal><motion.div className="extraction-flight" initial={exiting ? { ...compactTarget, opacity: 1 } : { ...compactOrigin, opacity: 1 }} animate={exiting ? { ...compactOrigin, opacity: 1 } : { ...compactTarget, opacity: 1 }} transition={{ type: 'spring', bounce: 0, duration: .38 }}>{text}</motion.div></FloatingPortal> : null;
-  return <><motion.aside className={`correction-panel glass-surface ${exiting ? 'is-exiting' : ''}`} aria-label="修订编辑器" initial={reduceMotion ? { opacity: 0 } : { opacity: 0, x: -7 }} animate={{ opacity: exiting ? .72 : 1, x: 0 }} transition={{ type: 'spring', bounce: 0, duration: reduceMotion ? .12 : .34 }}>
-    <header className="panel-header"><div><h2>修订 {fmtTime(segment.startSample)}</h2><p>录音与转写独立运行，草稿自动保存。</p></div><IconButton label="关闭并保留草稿" onClick={onClose}><X size={18} /></IconButton></header>
-    <div className="editor-source"><button onClick={onPlay}><Play size={13} fill="currentColor" /> 回放此段</button><details><summary>原识别</summary><p>{draft.baseMachineText}</p></details></div>
-    {segment.pendingMachine && <button className="editor-update"><CircleAlert size={15} /> 此段有新的识别结果待核对</button>}
-    <label className="editor-label" htmlFor="correction-text">修订内容</label>
-    <div ref={targetRef} className="editor-shared-text" style={{ opacity: flightDone && !exiting ? 1 : 0 }}>
-      <textarea id="correction-text" autoFocus value={text} onChange={(e) => onText(e.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(e) => {
+  // Grow the field with its text so a one-line sentence is not an empty slab; long text scrolls inside.
+  const fitField = useCallback(() => { const field = textRef.current; if (!field) return; field.style.height = 'auto'; field.style.height = `${field.scrollHeight}px`; }, []);
+  useLayoutEffect(fitField, [fitField, text]);
+  useEffect(() => { window.addEventListener('resize', fitField); return () => window.removeEventListener('resize', fitField); }, [fitField]);
+  useLayoutEffect(() => {
+    const rect = textRef.current?.getBoundingClientRect();
+    // The panel is still at its slide-in offset when this is measured.
+    if (rect) setTargetRect({ left: rect.left + (reduceMotion ? 0 : PANEL_SLIDE), top: rect.top, width: rect.width, height: rect.height });
+  }, [reduceMotion]);
+  useEffect(() => { if (!originRect || reduceMotion || exiting) return; const timer = window.setTimeout(() => setFlightDone(true), 440); return () => clearTimeout(timer); }, [exiting, originRect, reduceMotion]);
+  const origin = originRect ? { left: originRect.left, top: originRect.top, width: Math.min(originRect.width, 560), height: Math.min(originRect.height, 180) } : null;
+  // A ring drawn with box-shadow, not a border, so the text box matches the textarea exactly and wraps identically on landing.
+  const lifted = { boxShadow: '0 0 0 1px rgba(50,101,214,.2), 0 16px 36px rgba(24,34,48,.18), 0 2px 6px rgba(24,34,48,.08)' };
+  const landed = { boxShadow: '0 0 0 1px rgba(50,101,214,0), 0 0 0 rgba(24,34,48,0), 0 0 0 rgba(24,34,48,0)' };
+  const flight = origin && targetRect && !reduceMotion && (!flightDone || exiting) ? <FloatingPortal><motion.div className="extraction-flight" aria-hidden="true"
+    initial={exiting ? { ...targetRect, ...landed, opacity: 1 } : { ...origin, ...lifted, opacity: 1 }}
+    animate={exiting ? { ...origin, ...lifted, opacity: [1, 1, 0] } : { ...targetRect, ...landed, opacity: 1 }}
+    transition={{ duration: .4, ease: FLIGHT_EASE, opacity: exiting ? { duration: .4, times: [0, .7, 1] } : undefined }}>{text}</motion.div></FloatingPortal> : null;
+  const statusView = status === 'saving' ? '正在保存…' : status === 'saved' ? <><Check size={13} /> 草稿已保存</> : status === 'restored' ? <><ArchiveRestore size={13} /> 已恢复草稿</> : status === 'error' ? <><CircleAlert size={13} /> 草稿保存失败</> : status === 'commitError' ? <><CircleAlert size={13} /> 修订未保存：{commitError || '请重试'}</> : status === 'dirty' ? '未保存' : '自动保存';
+  return <><motion.aside className={`correction-panel glass-surface ${exiting ? 'is-exiting' : ''}`} aria-label="修订编辑器"
+    initial={reduceMotion ? { opacity: 0 } : { opacity: 0, x: -PANEL_SLIDE }}
+    animate={exiting ? { opacity: 0, x: reduceMotion ? 0 : -PANEL_SLIDE } : { opacity: 1, x: 0 }}
+    exit={{ opacity: 0 }}
+    transition={{ duration: reduceMotion ? .12 : exiting ? .3 : .34, ease: FLIGHT_EASE }}>
+    <header className="panel-header"><div><h2>修订 <span>{fmtTime(segment.startSample)}</span></h2><p>{segment.userSeq > 0 ? `第 ${segment.userSeq + 1} 次修订 · ` : ''}录音与转写照常进行</p></div><IconButton label="关闭并保留草稿" onClick={onClose}><X size={18} /></IconButton></header>
+    <div className="editor-source"><button onClick={onPlay}><Play size={12} fill="currentColor" /> 回放此段</button><details><summary>原识别</summary><p>{draft.baseMachineText}</p></details></div>
+    {segment.pendingMachine && <button className="editor-update" onClick={onReview}><CircleAlert size={15} /> 此段有新的识别结果待核对</button>}
+    <div className={`editor-card ${status === 'error' || status === 'commitError' ? 'has-error' : ''}`}>
+      <label className="sr-only" htmlFor="correction-text">修订内容</label>
+      <textarea ref={textRef} id="correction-text" rows={1} autoFocus spellCheck={false} value={text} style={{ opacity: flightDone && !exiting ? 1 : 0 }} onChange={(e) => onText(e.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(e) => {
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !composing.current && !e.nativeEvent.isComposing) { e.preventDefault(); onCommit(); }
         if (e.key === 'Escape' && !composing.current) onClose();
       }} />
+      <div className="editor-card-bar">
+        <IconButton label="撤销" onClick={onUndo}><Undo2 size={15} /></IconButton><IconButton label="重做" onClick={onRedo}><Redo2 size={15} /></IconButton>
+        <span className={`draft-status status-${status}`} role="status">{statusView}</span>
+      </div>
     </div>
-    <div className={`draft-status status-${status}`} role="status">
-      {status === 'saving' ? '正在保存草稿…' : status === 'saved' ? <><Check size={14} /> 草稿已保存</> : status === 'restored' ? <><ArchiveRestore size={14} /> 已恢复草稿</> : status === 'error' ? <><CircleAlert size={14} /> 草稿保存失败</> : status === 'dirty' ? '有未保存的修改' : '编辑中'}
-    </div>
-    <div className="editor-history"><IconButton label="撤销修订" onClick={onUndo}><Undo2 size={17} /></IconButton><IconButton label="重做修订" onClick={onRedo}><Redo2 size={17} /></IconButton><span>修订 {segment.userSeq + 1}</span></div>
     <div className="editor-footer"><button className="quiet-danger" onClick={onDiscard}>放弃草稿</button><button className="primary-button" onClick={onCommit} disabled={status === 'saving'}>保存修订 <kbd>{shortcutLabel('Enter')}</kbd></button></div>
   </motion.aside>{flight}</>;
 }
@@ -474,20 +505,30 @@ function InlineNoteComposer({ open, onOpenChange, kind, setKind, configured, onS
   </span>;
 }
 
-function ReviewDialog({ segment, onResolve, onClose }: { segment: Segment; onResolve: (action: 'keep' | 'machine', text?: string) => void; onClose: () => void }) {
+function ReviewDialog({ segment, error, onResolve, onClose }: { segment: Segment; error: string; onResolve: (action: 'keep' | 'machine', text?: string) => void; onClose: () => void }) {
   const [manual, setManual] = useState(segment.displayText);
   return <Dialog title="核对识别更新" description={`${fmtTime(segment.startSample)} · 作出选择前，当前文字会继续保留。`} onClose={onClose} wide>
     <div className="compare-grid"><section><span>当前文字</span><p>{segment.displayText}</p></section><section><span>新识别版本</span><p>{segment.pendingMachine}</p></section></div>
     <label className="form-field"><span>手动合并</span><textarea value={manual} onChange={(e) => setManual(e.target.value)} /></label>
+    {error && <p className="inline-error" role="alert"><CircleAlert size={14} />{error}</p>}
     <footer className="review-actions"><button className="secondary-button" onClick={() => onResolve('keep')}>保留当前文字</button><button className="secondary-button" onClick={() => onResolve('machine')}>采用识别版本</button><button className="primary-button" onClick={() => onResolve('keep', manual)}>保存手动合并</button></footer>
   </Dialog>;
 }
 
+/** Cheap change marker: every domain and runtime session mutation bumps operationSeq; the rest covers app-level fields. */
+const stateSignature = (value: AppState) => `${value.selectedSessionId}|${value.workerEpoch}|${JSON.stringify(value.settings)}|${JSON.stringify(value.projects)}|${value.sessions.map((session) => `${session.id}:${session.operationSeq}:${session.title}:${session.projectId}:${session.recordingState}:${session.inferenceState}:${session.error}:${session.segments.length}:${session.notes.length}:${session.drafts.length}:${session.runs.map((run) => `${run.samples}/${run.state}`).join(',')}:${JSON.stringify(session.customVocabulary ?? [])}`).join('|')}`;
+
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo>({ modelState: 'loading' });
-  const [fatal, setFatal] = useState(''); const [notice, setNotice] = useState('');
+  const [fatal, setFatal] = useState(''); const [notice, setNotice] = useState(''); const noticeTimer = useRef<number | undefined>(undefined);
+  const fatalOrigin = useRef<{ source: 'action' | 'poll'; request: number } | null>(null); const dismissedPollError = useRef('');
+  const [dialogError, setDialogError] = useState(''); const [commitError, setCommitError] = useState('');
+  const creatingCourseRef = useRef(false); const [creatingCourse, setCreatingCourse] = useState(false);
+  const stateRef = useRef(state); stateRef.current = state;
   const [modal, setModal] = useState<Modal>(null); const [newTitle, setNewTitle] = useState(''); const [newProjectId, setNewProjectId] = useState<string | null>(null);
+  const modalRef = useRef(modal); modalRef.current = modal;
+  useEffect(() => setDialogError(''), [modal]);
   const [source, setSource] = useState<'microphone' | 'system'>('microphone');
   const [captureActionPending, setCaptureActionPending] = useState<'start' | 'pause' | 'resume' | 'stop' | null>(null);
   const [cloudActionPending, setCloudActionPending] = useState(false);
@@ -538,7 +579,8 @@ export default function App() {
   useEffect(() => { localStorage.setItem('lectureedit.sidebar-expanded', sidebarExpanded ? '1' : '0'); }, [sidebarExpanded]);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && (event.key.toLocaleLowerCase() === 'k' || event.key.toLocaleLowerCase() === 'f')) { event.preventDefault(); setSearchOpen(true); }
+      if (event.isComposing || modalRef.current || fullEditorRef.current || !isPrimaryShortcut(event)) return;
+      if (event.key.toLocaleLowerCase() === 'k' || event.key.toLocaleLowerCase() === 'f') { event.preventDefault(); setSearchOpen(true); }
     };
     window.addEventListener('keydown', shortcut);
     return () => window.removeEventListener('keydown', shortcut);
@@ -563,7 +605,20 @@ export default function App() {
   }, [engineOpen, exportOpen, moreOpen]);
   const transcriptRevision = selected?.segments.map((segment) => `${segment.id}:${segment.machineRevision}:${segment.userSeq}:${segment.final}:${segment.displayText}`).join('|') ?? '';
 
-  const showError = useCallback((error: unknown) => { setFatal(error instanceof Error ? error.message : String(error)); }, []);
+  const showError = useCallback((error: unknown, source: 'action' | 'poll' = 'action') => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (source === 'poll' && message === dismissedPollError.current) return;
+    fatalOrigin.current = { source, request: requestSequence.current }; setFatal(message);
+  }, []);
+  const clearFatal = useCallback((source: 'action' | 'poll', request: number) => {
+    const origin = fatalOrigin.current;
+    if (origin?.source === source && request > origin.request) { fatalOrigin.current = null; setFatal(''); }
+  }, []);
+  const dismissFatal = () => { if (fatalOrigin.current?.source === 'poll') dismissedPollError.current = fatal; fatalOrigin.current = null; setFatal(''); };
+  const flashNotice = useCallback((message: string, duration: number) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    setNotice(message); noticeTimer.current = window.setTimeout(() => { noticeTimer.current = undefined; setNotice(''); }, duration);
+  }, []);
   const stopPlayback = useCallback(() => { playbackRequest.current += 1; audioRef.current?.pause(); audioRef.current = null; setPlayingSegmentId(null); }, []);
   const guardProgrammaticScroll = useCallback((duration = 500) => {
     programmaticScrollRef.current = true;
@@ -582,15 +637,17 @@ export default function App() {
     const anchorTop = anchor.getBoundingClientRect().top - viewport.top + element.scrollTop;
     return transcriptFollowTarget(anchorTop, element.scrollHeight, element.clientHeight);
   }, []);
-  const update = useCallback(async (promise: Promise<AppState | null>) => {
-    const request = ++requestSequence.current; pendingWrites.current += 1;
+  /** `background` writes (long model downloads) don't pause snapshot polling; `onError` reports inline instead of the banner. */
+  const update = useCallback(async (promise: Promise<AppState | null>, options: { onError?: (message: string) => void; background?: boolean } = {}) => {
+    const request = ++requestSequence.current; if (!options.background) pendingWrites.current += 1;
     try {
       const result = await promise;
       if (result && request >= appliedSequence.current) { appliedSequence.current = request; setState(result); }
+      if (result) clearFatal('action', request);
       return result;
-    } catch (error) { showError(error); return null; }
-    finally { pendingWrites.current = Math.max(0, pendingWrites.current - 1); }
-  }, [showError]);
+    } catch (error) { if (options.onError) options.onError(error instanceof Error ? error.message : String(error)); else showError(error); return null; }
+    finally { if (!options.background) pendingWrites.current = Math.max(0, pendingWrites.current - 1); }
+  }, [clearFatal, showError]);
 
   useEffect(() => { void update(adapter.dispatch({ type: 'snapshot' })); adapter.runtimeInfo().then(setRuntime).catch(showError); }, [showError, update]);
   useEffect(() => {
@@ -605,9 +662,13 @@ export default function App() {
     if (pendingWrites.current > 0) return;
     const request = ++requestSequence.current;
     adapter.dispatch({ type: adapter.mode === 'demo' ? 'demoTick' : 'snapshot', ...(selected ? { sessionId: selected.id } : {}) }).then((next) => {
-      if (pendingWrites.current === 0 && request >= appliedSequence.current) { appliedSequence.current = request; setState(next); }
-    }).catch((error) => setFatal(error instanceof Error ? error.message : String(error)));
-  }, 700); return () => clearInterval(timer); }, [selected?.id]);
+      if (pendingWrites.current === 0 && request >= appliedSequence.current) {
+        appliedSequence.current = request;
+        if (!stateRef.current || stateSignature(next) !== stateSignature(stateRef.current)) setState(next);
+      }
+      clearFatal('poll', request);
+    }).catch((error) => showError(error, 'poll'));
+  }, 700); return () => clearInterval(timer); }, [selected?.id, clearFatal, showError]);
 
   const queueDraftSave = useCallback((payload: { draft: Draft; text: string; revision: number }) => {
     setSaveStatus('saving');
@@ -639,6 +700,7 @@ export default function App() {
   }, [queueDraftSave]);
   useEffect(() => () => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
     if (scrollGuardTimer.current) clearTimeout(scrollGuardTimer.current);
   }, []);
   useEffect(() => () => stopPlayback(), [stopPlayback]);
@@ -685,7 +747,7 @@ export default function App() {
   };
   const closeEditor = async () => { if (!await flushDraft()) return; if (editor && selected) { const result = await update(adapter.dispatch({ type: 'closeDraft', commandId: commandId(), sessionId: selected.id, draftId: editor.draft.id })); if (!result) return; } await animateEditorHome(); };
   const discardEditor = async () => { if (!editor || !selected) return; if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = undefined; } await saveChain.current.catch(() => undefined); const result = await update(adapter.dispatch({ type: 'discardDraft', commandId: commandId(), sessionId: selected.id, draftId: editor.draft.id })); if (result) await animateEditorHome(); };
-  const commitEditor = async () => { if (!editor || !selected) return; if (!await flushDraft()) return; setSaveStatus('saving'); const wasRecording = selected.recordingState === 'recording'; const result = await update(adapter.dispatch({ type: 'commitEdit', commandId: commandId(), sessionId: selected.id, draftId: editor.draft.id, text: editor.text, expectedUserSeq: editor.draft.expectedUserSeq })); if (result) { setSaveStatus('saved'); if (wasRecording) guardProgrammaticScroll(1200); await animateEditorHome(); if (wasRecording) returnLatest(); setNotice(activeSegment?.pendingMachine ? '修订已保存，另有识别更新待核对。' : '修订已保存。'); window.setTimeout(() => setNotice(''), 2400); } else setSaveStatus('error'); };
+  const commitEditor = async () => { if (!editor || !selected) return; if (!await flushDraft()) return; setSaveStatus('saving'); setCommitError(''); const wasRecording = selected.recordingState === 'recording'; const result = await update(adapter.dispatch({ type: 'commitEdit', commandId: commandId(), sessionId: selected.id, draftId: editor.draft.id, text: editor.text, expectedUserSeq: editor.draft.expectedUserSeq }), { onError: setCommitError }); if (result) { setSaveStatus('saved'); if (wasRecording) guardProgrammaticScroll(1200); await animateEditorHome(); if (wasRecording) returnLatest(); flashNotice(activeSegment?.pendingMachine ? '修订已保存，另有识别更新待核对。' : '修订已保存。', 2400); } else setSaveStatus('commitError'); };
 
   const beginFullEdit = async () => {
     if (!selected || ['starting', 'recording', 'paused', 'stopping'].includes(selected.recordingState) || !await flushDraft()) return;
@@ -708,7 +770,7 @@ export default function App() {
       for (const id of result.savedSegmentIds) nextOriginal[id] = current.values[id];
       if (exitWhenSaved) setFullEditor(null);
       else setFullEditor((value) => value && value.sessionId === current.sessionId ? { ...value, original: nextOriginal, status: 'saved', error: '' } : value);
-      setNotice('全文修改已保存到本机。'); window.setTimeout(() => setNotice(''), 2400);
+      flashNotice('全文修改已保存到本机。', 2400);
       return true;
     } catch (cause) {
       const failure = cause instanceof TranscriptSaveError ? cause : new TranscriptSaveError(cause instanceof Error ? cause.message : String(cause), null, []);
@@ -724,7 +786,7 @@ export default function App() {
   };
   useEffect(() => {
     const saveShortcut = (event: KeyboardEvent) => {
-      if (!fullEditorRef.current || event.isComposing || !(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 's') return;
+      if (!fullEditorRef.current || modalRef.current || event.isComposing || !isPrimaryShortcut(event) || event.key.toLocaleLowerCase() !== 's') return;
       event.preventDefault(); void saveFullDocument();
     };
     window.addEventListener('keydown', saveShortcut);
@@ -837,7 +899,7 @@ export default function App() {
     const editShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing = target?.matches('input, textarea, select, [contenteditable="true"]');
-      if (event.isComposing || typing || editorRef.current || !(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== 'e') return;
+      if (event.isComposing || typing || editorRef.current || modalRef.current || fullEditorRef.current || !isPrimaryShortcut(event) || event.key.toLocaleLowerCase() !== 'e') return;
       if (!selected?.segments.length) return;
       event.preventDefault();
       editCurrentSentence();
@@ -868,10 +930,14 @@ export default function App() {
     stopPlayback();
     const result = await update(adapter.dispatch({ type: direction, commandId: commandId(), sessionId: selected?.id, segmentId: segment.id, expectedUserSeq: segment.userSeq }));
     if (!result) return;
-    setNotice(direction === 'undo' ? '已撤销此句最近一次修订。' : '已重做此句修订。');
-    window.setTimeout(() => setNotice(''), 1800);
+    flashNotice(direction === 'undo' ? '已撤销此句最近一次修订。' : '已重做此句修订。', 1800);
   };
-  const createCourse = async () => { if (!await saveFullDocument(true) || !await flushDraft()) return; searchNavigationGeneration.current += 1; setPendingSearchTarget(null); stopPlayback(); const title = newTitle.trim() || `${new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric' }).format(Date.now())}课堂`; const result = await update(adapter.dispatch({ type: 'createSession', commandId: commandId(), title, projectId: newProjectId, mode: adapter.mode === 'demo' ? 'demo' : 'live' })); if (result) { setEditor(null); setModal(null); setNewTitle(''); setNewProjectId(null); } };
+  const createCourse = async () => {
+    if (creatingCourseRef.current) return;
+    creatingCourseRef.current = true; setCreatingCourse(true); setDialogError('');
+    try { if (!await saveFullDocument(true) || !await flushDraft()) return; searchNavigationGeneration.current += 1; setPendingSearchTarget(null); stopPlayback(); const title = newTitle.trim() || `${new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric' }).format(Date.now())}课堂`; const result = await update(adapter.dispatch({ type: 'createSession', commandId: commandId(), title, projectId: newProjectId, mode: adapter.mode === 'demo' ? 'demo' : 'live' }), { onError: setDialogError }); if (result) { setEditor(null); setModal(null); setNewTitle(''); setNewProjectId(null); viewModeRef.current = 'following'; setViewMode('following'); setUnseen(0); } }
+    finally { creatingCourseRef.current = false; setCreatingCourse(false); }
+  };
   const prepareModel = async () => { const result = await update(adapter.dispatch({ type: 'prepareModel', commandId: commandId() })); try { setRuntime(await adapter.runtimeInfo()); } catch (error) { showError(error); } return Boolean(result); };
   const toggleRecording = async () => {
     if (!selected || captureActionPending) return;
@@ -907,7 +973,7 @@ export default function App() {
       try { setRuntime(await adapter.runtimeInfo()); } catch { /* polling will refresh the status */ }
     } finally { setCloudActionPending(false); }
   };
-  const setSelected = async (id: string) => { if (!await saveFullDocument(true) || !await flushDraft()) return; searchNavigationGeneration.current += 1; setPendingSearchTarget(null); stopPlayback(); const result = await update(adapter.dispatch({ type: 'selectSession', commandId: commandId(), sessionId: id })); if (result) { setEditor(null); setFullEditor(null); } };
+  const setSelected = async (id: string) => { if (!await saveFullDocument(true) || !await flushDraft()) return; searchNavigationGeneration.current += 1; setPendingSearchTarget(null); stopPlayback(); const result = await update(adapter.dispatch({ type: 'selectSession', commandId: commandId(), sessionId: id })); if (result) { setEditor(null); setFullEditor(null); viewModeRef.current = 'following'; setViewMode('following'); setUnseen(0); } };
   const importCoursePackage = async () => { if (!await saveFullDocument(true) || !await flushDraft()) return; searchNavigationGeneration.current += 1; setPendingSearchTarget(null); stopPlayback(); const result = await update(adapter.importPackage()); if (result) { setEditor(null); setFullEditor(null); } };
   const createProject = async (title: string) => {
     const existing = new Set(state?.projects.map(project => project.id) ?? []);
@@ -970,14 +1036,14 @@ export default function App() {
   };
 
   if (!state) return <main className="loading-screen"><div className="loading-mark">LE</div><p>正在打开课程…</p>{fatal && <p className="inline-error">{fatal}</p>}</main>;
-  return <div className={`app-shell ${editor ? 'editor-open' : ''} ${fullEditor ? 'full-editing' : ''} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`} style={{ '--reader-font': `${fontSize}px` } as React.CSSProperties}>
-    <CourseSidebar projects={state.projects ?? []} sessions={state.sessions} selectedId={state.selectedSessionId} expanded={sidebarExpanded} revealProjectId={sidebarRevealProjectId ?? selected?.projectId ?? null} onToggle={() => setSidebarExpanded(value => !value)} onSearch={() => setSearchOpen(true)} onSelect={setSelected} onNew={() => { setNewProjectId(null); setModal('new'); }} onNewProjectCourse={(projectId) => { setNewProjectId(projectId); setModal('new'); }} onCreateProject={createProject} onRenameProject={renameProject} onMove={moveSession} onRename={(sessionId, title) => void update(adapter.dispatch({ type: 'renameSession', commandId: commandId(), sessionId, title }))} onImport={() => void importCoursePackage()} />
+  return <div className={`app-shell ${editor && !editor.exiting ? 'editor-open' : ''} ${fullEditor ? 'full-editing' : ''} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`} style={{ '--reader-font': `${fontSize}px` } as React.CSSProperties}>
+    <CourseSidebar projects={state.projects ?? []} sessions={state.sessions} selectedId={state.selectedSessionId} expanded={sidebarExpanded} revealProjectId={sidebarRevealProjectId ?? selected?.projectId ?? null} onToggle={() => setSidebarExpanded(value => !value)} onSearch={() => setSearchOpen(true)} onSelect={setSelected} onNew={() => { setNewProjectId(null); setModal('new'); }} onNewProjectCourse={(projectId) => { setNewProjectId(projectId); setModal('new'); }} onCreateProject={createProject} onRenameProject={renameProject} onMove={moveSession} onRename={(sessionId, title) => { const next = title.trim(); if (next && next !== state.sessions.find((session) => session.id === sessionId)?.title) void update(adapter.dispatch({ type: 'renameSession', commandId: commandId(), sessionId, title: next })); }} onImport={() => void importCoursePackage()} />
     <GlassSurface className="workspace">
       <header className="topbar" aria-label="课程工具栏">
         <div className="toolbar-group reading-tools" aria-label="阅读工具">
           <IconButton label="搜索所有课堂" active={searchOpen} onClick={() => setSearchOpen(true)}><Search size={17} /></IconButton>
           {selected?.segments.length ? <button className={`follow-control ${viewMode === 'following' ? '' : 'is-paused'}`} aria-label={viewMode === 'following' ? `修订当前句，快捷键 ${shortcutLabel('E')}` : unseen ? `${unseen} 条新内容，回到实时` : '回到实时'} title={fullEditor ? '完成全文编辑后可修订单句' : viewMode === 'following' ? `修订当前句 · ${shortcutLabel('E')}` : '回到实时'} onClick={viewMode === 'following' ? editCurrentSentence : returnLatest} disabled={Boolean(editor || fullEditor)}>{viewMode === 'following' ? <><Pencil size={14} /> <span>修订当前句</span><kbd>{shortcutLabel('E')}</kbd></> : <><ChevronDown className="return-chevron" size={14} strokeWidth={1.9} /> <span>{unseen ? `${unseen} 条 · 回到实时` : '回到实时'}</span></>}</button> : null}
-          <div className="font-control" aria-label="转写字号"><button className={fontSize === 15 ? 'active' : ''} onClick={() => setFontSize(15)}>A</button><button className={fontSize === 17 ? 'active' : ''} onClick={() => setFontSize(17)}>A</button><button className={fontSize === 19 ? 'active' : ''} onClick={() => setFontSize(19)}>A</button></div>
+          <div className="font-control" role="group" aria-label="转写字号">{([[15, '小号字'], [17, '中号字'], [19, '大号字']] as const).map(([size, label]) => <button key={size} className={fontSize === size ? 'active' : ''} aria-label={label} title={label} aria-pressed={fontSize === size} onClick={() => setFontSize(size)}>A</button>)}</div>
         </div>
         <div className="toolbar-group model-tools" aria-label="转写设置">
           {pendingCount > 0 && <button className="pending-button" aria-label={`${pendingCount} 条待核对`} title={`${pendingCount} 条待核对`} onClick={() => { const first = selected?.segments.find((segment) => segment.pendingMachine); if (first) { setReviewSegment(first.id); setModal('review'); } }}><CircleAlert size={15} />{pendingCount}<span> 条待核对</span></button>}
@@ -994,18 +1060,19 @@ export default function App() {
           <div className="menu-wrap" ref={exportWrapRef}><button ref={exportButtonRef} className="export-button" aria-label="导出" aria-haspopup="menu" aria-expanded={exportOpen} title="导出" onClick={() => { setExportOpen((open) => !open); setEngineOpen(false); setMoreOpen(false); }} onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setExportOpen(true); setEngineOpen(false); setMoreOpen(false); requestAnimationFrame(() => exportMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()); } }}><Download size={15} /><span>导出</span><ChevronDown className={`control-chevron ${exportOpen ? 'is-open' : ''}`} size={13} strokeWidth={1.9} /></button>{exportOpen && <div ref={exportMenuRef} className="export-menu" role="menu" onKeyDown={moveMenuFocus}>{([['markdown', 'Markdown', FileText], ['html', '课程阅读 HTML', BookOpen], ['pdf', '精排 PDF', FileText], ['wav', 'WAV 音频', FileAudio], ['lecture', '原生课程包', ArchiveRestore]] as const).map(([format, label, Icon]) => <button role="menuitem" key={format} disabled={format === 'pdf' && !canExportNativePdf(runtime.platform)} title={format === 'pdf' && !canExportNativePdf(runtime.platform) ? PDF_PLATFORM_NOTICE : undefined} onClick={() => { setExportOpen(false); if (selected) void saveFullDocument().then((saved) => { if (saved) return adapter.exportSession(selected.id, format); }).catch(showError); }}><Icon size={16} /><span><strong>{label}</strong><small>{format === 'lecture' ? '可再次导入 LectureEdit' : format === 'wav' ? '导出原始课程录音' : format === 'pdf' ? (canExportNativePdf(runtime.platform) ? '适合打印与阅读的版式' : 'macOS 功能 · Windows 可导出 HTML 后打印') : '包含转写和课堂资料'}</small></span></button>)}</div>}</div>
           <div className="menu-wrap" ref={moreWrapRef}><button ref={moreButtonRef} className={`icon-button ${moreOpen ? 'is-active' : ''}`} aria-label="更多操作" aria-haspopup="dialog" aria-expanded={moreOpen} title="更多操作" onClick={() => { setMoreOpen((open) => !open); setEngineOpen(false); setExportOpen(false); }}><MoreHorizontal size={18} /></button>{moreOpen && selected && <div className="export-menu compact-menu" role="dialog" aria-label="更多操作">
             <label className="responsive-menu-control compact-source-control"><Mic size={16} /><span><strong>音频来源</strong><select value={source} onChange={(event) => { setSource(event.target.value as typeof source); setMoreOpen(false); }} disabled={captureInProgress} aria-label="音频来源"><option value="microphone">麦克风</option><option value="system" disabled={runtime.systemAudioAvailable === false}>系统声音{runtime.systemAudioAvailable === false ? '（不可用）' : ''}</option></select></span></label>
-            <div className="responsive-menu-control compact-font-control"><span>转写字号</span><div role="group" aria-label="转写字号"><button className={fontSize === 15 ? 'active' : ''} onClick={() => setFontSize(15)}>小</button><button className={fontSize === 17 ? 'active' : ''} onClick={() => setFontSize(17)}>中</button><button className={fontSize === 19 ? 'active' : ''} onClick={() => setFontSize(19)}>大</button></div></div>
+            <div className="responsive-menu-control compact-font-control"><span>转写字号</span><div role="group" aria-label="转写字号">{([[15, '小', '小号字'], [17, '中', '中号字'], [19, '大', '大号字']] as const).map(([size, text, label]) => <button key={size} className={fontSize === size ? 'active' : ''} aria-label={label} aria-pressed={fontSize === size} onClick={() => setFontSize(size)}>{text}</button>)}</div></div>
             <button onClick={() => { setMoreOpen(false); void update(adapter.importAudio(selected.id)); }}><FileAudio size={16} /><span><strong>导入 WAV</strong><small>添加已有录音</small></span></button><button disabled={cloudBusyElsewhere} onClick={() => { setMoreOpen(false); void retrySelectedInference(); }}><ArchiveRestore size={16} /><span><strong>{cloudBusyElsewhere ? '另一课程正在转写' : '重试转写'}</strong><small>{cloudBusyElsewhere ? '完成后可重试当前课程' : '重新启动处理'}</small></span></button>
           </div>}</div>
           <IconButton label="设置" onClick={() => { setPendingEngine(undefined); setModal('settings'); }}><SettingsIcon size={18} /></IconButton>
         </div>
       </header>
-      {fatal && <div className="error-banner" role="alert"><CircleAlert size={16} /><span>{fatal}</span><button onClick={() => setFatal('')} aria-label="关闭错误提示"><X size={15} /></button></div>}
+      {fatal && <FloatingPortal><div className="error-banner" role="alert"><CircleAlert size={16} /><span>{fatal}</span><button onClick={dismissFatal} aria-label="关闭错误提示"><X size={15} /></button></div></FloatingPortal>}
       {notice && <div className="toast" role="status"><Check size={15} />{notice}</div>}
       <LayoutGroup id="transcript-edit"><div className="content-frame">
-        <AnimatePresence initial={false}>{editor && activeSegment && <CorrectionPanel draft={editor.draft} segment={activeSegment} text={editor.text} status={saveStatus} originRect={editor.originRect} exiting={editor.exiting} onText={changeDraft} onClose={() => void closeEditor()} onDiscard={() => void discardEditor()} onCommit={() => void commitEditor()} onUndo={undoDraft} onRedo={redoDraft} onPlay={() => void playSegment(activeSegment)} />}</AnimatePresence>
+        <AnimatePresence initial={false}>{editor && activeSegment && <CorrectionPanel draft={editor.draft} segment={activeSegment} text={editor.text} status={saveStatus} commitError={commitError} onReview={() => { setReviewSegment(activeSegment.id); setModal('review'); }} originRect={editor.originRect} exiting={editor.exiting} onText={changeDraft} onClose={() => void closeEditor()} onDiscard={() => void discardEditor()} onCommit={() => void commitEditor()} onUndo={undoDraft} onRedo={redoDraft} onPlay={() => void playSegment(activeSegment)} />}</AnimatePresence>
         <main className="document-pane">
-          {!selected ? <div className="empty-state"><BookOpen size={32} /><h2>开始第一节课堂</h2><p>新建课堂后即可录音、转写，并把实时内容整理成课堂记录。</p><button className="primary-button" onClick={() => setModal('new')}><Plus size={16} /> 新建课堂</button></div> : selected.segments.length === 0 ? <EmptyTranscriptState session={selected} samples={totalSamples} demo={adapter.mode === 'demo'} cloud={cloudEngine} legacyEngine={legacyEngine} retryDisabled={cloudBusyElsewhere} runtime={runtime} onStart={() => void toggleRecording()} onImport={() => void update(adapter.importAudio(selected.id))} onRetry={() => void retrySelectedInference()} onPrepare={() => void prepareModel()} onSetup={() => { setPendingEngine(undefined); setModal('settings'); }} /> : <div className={`transcript-scroll is-${viewMode}`} ref={transcriptRef} tabIndex={0} aria-label="课堂转写" onWheel={(event) => { if (event.deltaY < 0) pauseFollowing(); }} onScroll={handleTranscriptScroll} onKeyDown={handleTranscriptKeyDown} onPointerDown={() => { pointerDownRef.current = true; }} onPointerUp={() => { pointerDownRef.current = false; }} onPointerLeave={() => { pointerDownRef.current = false; }} onPointerCancel={() => { pointerDownRef.current = false; }} onTouchStart={handleTranscriptTouchStart} onTouchMove={handleTranscriptTouchMove} onTouchEnd={() => { touchStartYRef.current = null; }} onTouchCancel={() => { touchStartYRef.current = null; }}>
+          {selected && (selected.error || selected.recordingState === 'error' || selected.inferenceState === 'error') && <div className={`session-error ${fatal ? 'is-offset' : ''}`} role="alert"><CircleAlert size={16} /><span>{selected.error || (selected.recordingState === 'error' ? recordingLabel.error : inferenceLabel.error)}</span></div>}
+          {!selected ? <div className="empty-state"><BookOpen size={32} /><h2>开始第一节课堂</h2><p>新建课堂后即可录音、转写，并把实时内容整理成课堂记录。</p><button className="primary-button" onClick={() => setModal('new')}><Plus size={16} /> 新建课堂</button></div> : selected.segments.length === 0 ? <EmptyTranscriptState session={selected} samples={totalSamples} demo={adapter.mode === 'demo'} cloud={cloudEngine} cloudReady={Boolean(runtime.cloudKeyConfigured && state.settings.cloudConsent)} legacyEngine={legacyEngine} retryDisabled={cloudBusyElsewhere} runtime={runtime} onStart={() => void toggleRecording()} onImport={() => void update(adapter.importAudio(selected.id))} onRetry={() => void retrySelectedInference()} onPrepare={() => void prepareModel()} onSetup={() => { setPendingEngine(undefined); setModal('settings'); }} /> : <div key={selected.id} className={`transcript-scroll is-${viewMode}`} ref={transcriptRef} tabIndex={0} aria-label="课堂转写" onWheel={(event) => { if (event.deltaY < 0) pauseFollowing(); }} onScroll={handleTranscriptScroll} onKeyDown={handleTranscriptKeyDown} onPointerDown={() => { pointerDownRef.current = true; }} onPointerUp={() => { pointerDownRef.current = false; }} onPointerLeave={() => { pointerDownRef.current = false; }} onPointerCancel={() => { pointerDownRef.current = false; }} onTouchStart={handleTranscriptTouchStart} onTouchMove={handleTranscriptTouchMove} onTouchEnd={() => { touchStartYRef.current = null; }} onTouchCancel={() => { touchStartYRef.current = null; }}>
             <div className="transcript-column" ref={transcriptContentRef}>
               {fullEditor && fullEditor.sessionId === selected.id ? <FullTranscriptEditor session={selected} values={fullEditor.values} original={fullEditor.original} status={fullEditor.status} error={fullEditor.error} onText={(segmentId, text) => setFullEditor((value) => value ? { ...value, values: { ...value.values, [segmentId]: text }, status: 'editing', error: '' } : value)} onSave={() => void saveFullDocument()} onDone={() => void saveFullDocument(true)} /> :
               <TranscriptAssist segments={selected.segments} sessionId={selected.id} configured={Boolean(runtime.deepseekKeyConfigured)} onSave={async (segmentId, text, sourceLabel) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId, kind: 'note', text, sourceLabel, imageData: null })))}>
@@ -1023,8 +1090,8 @@ export default function App() {
       </div></LayoutGroup>
     </GlassSurface>
     <GlobalSearch open={searchOpen} sessions={state.sessions} projects={state.projects ?? []} onClose={() => setSearchOpen(false)} onNavigate={navigateSearch} />
-    {modal === 'new' && <Dialog title="新建课堂" description={newProjectId ? `课堂将收入课程分组“${state.projects.find(project => project.id === newProjectId)?.title ?? '未命名课程'}”。` : '课堂创建成功后，再在准备好时开始录音。'} onClose={() => { setModal(null); setNewProjectId(null); }}><label className="form-field"><span>课堂名称</span><input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) void createCourse(); }} placeholder="例如：Lecture 1 · Markets & Choices" /></label><div className="course-setup"><div><Languages size={17} /><span><strong>{state.settings.language === 'auto' ? '自动检测语言' : state.settings.language === 'zh' ? '中文' : state.settings.language === 'en' ? '英语' : state.settings.language}</strong><small>可在本地转写设置中修改</small></span></div><div><Mic size={17} /><span><strong>{source === 'microphone' ? '麦克风' : '系统声音'}</strong><small>开始录音前可以切换音频来源</small></span></div></div><footer><button className="secondary-button" onClick={() => { setModal(null); setNewProjectId(null); }}>取消</button><button className="primary-button" onClick={() => void createCourse()}>创建课堂</button></footer></Dialog>}
-    {modal === 'settings' && <SettingsDialog settings={state.settings} session={selected} project={selectedProject} runtime={runtime} initialEngine={pendingEngine} onClose={() => { setPendingEngine(undefined); setModal(null); }} onPick={handlePickPath} onInstall={async () => { const result = await update(adapter.dispatch({ type: 'installModel', commandId: commandId(), engine: 'qwen' })); if (!result) return false; return prepareModel(); }} onPrepare={prepareModel} onSave={async (settings, vocabulary) => { const result = await update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings, ...(selectedProject ? { projectId: selectedProject.id, projectVocabulary: vocabulary.projectVocabulary } : {}), ...(selected ? { sessionId: selected.id, sessionVocabulary: vocabulary.sessionVocabulary } : {}) })); if (result) { setPendingEngine(undefined); setModal(null); } return Boolean(result); }} />}
-    {modal === 'review' && reviewed && <ReviewDialog segment={reviewed} onClose={() => setModal(null)} onResolve={(action, text) => { if (!selected) return; void update(adapter.dispatch({ type: 'resolve', commandId: commandId(), sessionId: selected.id, segmentId: reviewed.id, expectedUserSeq: reviewed.userSeq, expectedMachineRevision: reviewed.machineRevision, action, text })).then((result) => { if (result) setModal(null); }); }} />}
+    {modal === 'new' && <Dialog title="新建课堂" description={newProjectId ? `课堂将收入课程分组“${state.projects.find(project => project.id === newProjectId)?.title ?? '未命名课程'}”。` : '课堂创建成功后，再在准备好时开始录音。'} onClose={() => { setModal(null); setNewProjectId(null); }}><label className="form-field"><span>课堂名称</span><input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) void createCourse(); }} placeholder="例如：Lecture 1 · Markets & Choices" /></label>{dialogError && <p className="inline-error" role="alert"><CircleAlert size={14} />{dialogError}</p>}<div className="course-setup"><div><Languages size={17} /><span><strong>{state.settings.language === 'auto' ? '自动检测语言' : state.settings.language === 'zh' ? '中文' : state.settings.language === 'en' ? '英语' : state.settings.language}</strong><small>可在本地转写设置中修改</small></span></div><div><Mic size={17} /><span><strong>{source === 'microphone' ? '麦克风' : '系统声音'}</strong><small>开始录音前可以切换音频来源</small></span></div></div><footer><button className="secondary-button" onClick={() => { setModal(null); setNewProjectId(null); }}>取消</button><button className="primary-button" disabled={creatingCourse} onClick={() => void createCourse()}>{creatingCourse ? '正在创建…' : '创建课堂'}</button></footer></Dialog>}
+    {modal === 'settings' && <SettingsDialog key={selected?.id ?? 'none'} settings={state.settings} session={selected} project={selectedProject} runtime={runtime} initialEngine={pendingEngine} onClose={() => { setPendingEngine(undefined); setModal(null); }} onPick={handlePickPath} onInstall={async () => { const result = await update(adapter.dispatch({ type: 'installModel', commandId: commandId(), engine: 'qwen' }), { background: true }); if (!result) return false; return prepareModel(); }} onPrepare={prepareModel} onSave={async (settings, vocabulary) => { let failure = ''; const result = await update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings, ...(selectedProject ? { projectId: selectedProject.id, projectVocabulary: vocabulary.projectVocabulary } : {}), ...(selected ? { sessionId: selected.id, sessionVocabulary: vocabulary.sessionVocabulary } : {}) }), { onError: (message) => { failure = message; } }); if (result) { setPendingEngine(undefined); setModal(null); return true; } if (failure) throw new Error(failure); return false; }} />}
+    {modal === 'review' && reviewed && <ReviewDialog segment={reviewed} error={dialogError} onClose={() => setModal(null)} onResolve={(action, text) => { if (!selected) return; void update(adapter.dispatch({ type: 'resolve', commandId: commandId(), sessionId: selected.id, segmentId: reviewed.id, expectedUserSeq: reviewed.userSeq, expectedMachineRevision: reviewed.machineRevision, action, text }), { onError: setDialogError }).then((result) => { if (result) setModal(null); }); }} />}
   </div>;
 }
