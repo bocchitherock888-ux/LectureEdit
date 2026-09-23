@@ -13,7 +13,7 @@
 .model-download-progress progress::-webkit-progress-value { background: var(--accent); transition: width 200ms ease; }
 .model-download-progress progress::-moz-progress-bar { background: var(--accent); }
 .model-download-progress span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.vocabulary-field textarea { min-height: 116px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.vocabulary-field textarea { min-height: 116px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Microsoft YaHei UI", "Microsoft YaHei", monospace; font-size: 12px; }
 .vocabulary-field > select { margin-bottom: 8px; }
 .vocabulary-field small { display: block; margin-top: 6px; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
 .auto-polish-control { display: grid; grid-template-columns: 34px minmax(0,1fr) 38px; align-items: center; gap: 11px; min-height: 70px; margin: 10px 0 16px; padding: 11px 13px; border: 1px solid rgba(255,255,255,.72); border-radius: 15px; background: var(--glass-fill,rgba(236,240,247,.56)); box-shadow: inset 0 1px 0 rgba(255,255,255,.9),0 2px 9px rgba(30,48,82,.055); -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%); cursor: pointer; }

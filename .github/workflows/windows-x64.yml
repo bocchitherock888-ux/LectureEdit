@@ -66,6 +66,10 @@ jobs:
           OFFLINE_WEBVIEW2: ${{ inputs.offline_webview2 || false }}
         run: |
           ./app/scripts/windows/Build-Windows.ps1 -CpuProfile $env:CPU_PROFILE -Jobs 2 -OfflineWebView2:($env:OFFLINE_WEBVIEW2 -eq 'true')
+      - name: Load the packaged model runtime and transcribe real speech
+        run: |
+          $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
+          ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Report (Join-Path $output.FullName 'QWEN-INFERENCE.json')
       - name: Upload installer, hashes and exact build report
         if: success()
         uses: actions/upload-artifact@v4

@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
-use windows::core::{Result as WindowsResult, BOOL, GUID};
+use std::time::{Duration, Instant};
+use windows::core::{BOOL, GUID};
 use windows::Win32::Foundation::TRUE;
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
-    WAVEFORMATEX,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_E_DEVICE_INVALIDATED, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -23,6 +23,10 @@ use windows::Win32::System::Console::SetConsoleCtrlHandler;
 
 const OUTPUT_RATE: f64 = 16_000.0;
 const QUEUE_CAPACITY: usize = 32;
+// Loopback delivers no packets while nothing is playing. After this much quiet the helper writes
+// silence up to wall-clock time so segments close and timestamps stay aligned with the lecture.
+const IDLE_FILL_AFTER: Duration = Duration::from_millis(100);
+const DEVICE_POLL: Duration = Duration::from_secs(1);
 const WAVE_FORMAT_PCM: u16 = 0x0001;
 const WAVE_FORMAT_IEEE_FLOAT: u16 = 0x0003;
 const WAVE_FORMAT_EXTENSIBLE: u16 = 0xfffe;
@@ -286,6 +290,124 @@ fn send_bounded(sender: &SyncSender<Chunk>, samples: Vec<i16>, produced: &Atomic
     }
 }
 
+enum Drained {
+    Audio,
+    Idle,
+    WriterClosed,
+}
+
+struct FormatGuard(*mut WAVEFORMATEX);
+impl Drop for FormatGuard {
+    fn drop(&mut self) {
+        unsafe { CoTaskMemFree(Some(self.0.cast())) }
+    }
+}
+
+struct LoopbackStream {
+    client: IAudioClient,
+    capture: IAudioCaptureClient,
+    mix: MixFormat,
+    resampler: LinearResampler,
+    device_id: Option<String>,
+    _format: FormatGuard,
+}
+
+unsafe fn default_device_id(enumerator: &IMMDeviceEnumerator) -> Option<String> {
+    let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
+    let id = device.GetId().ok()?;
+    let text = id.to_string().ok();
+    CoTaskMemFree(Some(id.0.cast()));
+    text
+}
+
+impl LoopbackStream {
+    unsafe fn open(enumerator: &IMMDeviceEnumerator) -> Result<Self, String> {
+        let device = enumerator
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .map_err(|error| error.to_string())?;
+        let device_id = default_device_id(enumerator);
+        let client: IAudioClient = device
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|error| error.to_string())?;
+        let format = FormatGuard(client.GetMixFormat().map_err(|error| error.to_string())?);
+        let mix = MixFormat::from_wave_format(format.0)?;
+        client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                0,
+                0,
+                format.0,
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+        let capture: IAudioCaptureClient = client.GetService().map_err(|error| error.to_string())?;
+        client.Start().map_err(|error| error.to_string())?;
+        Ok(Self {
+            client,
+            capture,
+            resampler: LinearResampler::new(mix.sample_rate),
+            mix,
+            device_id,
+            _format: format,
+        })
+    }
+
+    unsafe fn drain(
+        &mut self,
+        sender: &SyncSender<Chunk>,
+        produced: &AtomicU64,
+    ) -> windows::core::Result<Drained> {
+        let mut packet_frames = self.capture.GetNextPacketSize()?;
+        if packet_frames == 0 {
+            return Ok(Drained::Idle);
+        }
+        while packet_frames > 0 {
+            let mut data: *mut u8 = std::ptr::null_mut();
+            let mut frames = 0u32;
+            let mut flags = Default::default();
+            self.capture
+                .GetBuffer(&mut data, &mut frames, &mut flags, None, None)?;
+            let byte_count = frames as usize * self.mix.block_align;
+            let bytes = if data.is_null() {
+                &[]
+            } else {
+                slice::from_raw_parts(data, byte_count)
+            };
+            let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
+            let decoded = self.mix.decode_mono(bytes, frames as usize, silent);
+            self.capture.ReleaseBuffer(frames)?;
+            let decoded = decoded.map_err(|message| {
+                windows::core::Error::new(windows::Win32::Foundation::E_FAIL, message)
+            })?;
+            let output = self.resampler.process(&decoded);
+            if !send_bounded(sender, output, produced) {
+                return Ok(Drained::WriterClosed);
+            }
+            packet_frames = self.capture.GetNextPacketSize()?;
+        }
+        Ok(Drained::Audio)
+    }
+}
+
+fn fill_silence(
+    sender: &SyncSender<Chunk>,
+    produced: &AtomicU64,
+    started: Instant,
+    last_audio: &mut Instant,
+) {
+    let now = Instant::now();
+    if now.duration_since(*last_audio) < IDLE_FILL_AFTER {
+        return;
+    }
+    let expected = (now.duration_since(started).as_secs_f64() * OUTPUT_RATE) as u64;
+    let current = produced.load(Ordering::Acquire);
+    if expected > current {
+        send_bounded(sender, vec![0; (expected - current) as usize], produced);
+    }
+    *last_audio = now - IDLE_FILL_AFTER;
+}
+
 unsafe fn run() -> Result<(), String> {
     CoInitializeEx(None, COINIT_MULTITHREADED)
         .ok()
@@ -318,88 +440,55 @@ unsafe fn run() -> Result<(), String> {
 
     let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
         .map_err(|error| error.to_string())?;
-    let device = enumerator
-        .GetDefaultAudioEndpoint(eRender, eConsole)
-        .map_err(|error| error.to_string())?;
-    let audio_client: IAudioClient = device
-        .Activate(CLSCTX_ALL, None)
-        .map_err(|error| error.to_string())?;
-    let wave_pointer = audio_client
-        .GetMixFormat()
-        .map_err(|error| error.to_string())?;
-    struct FormatGuard(*mut WAVEFORMATEX);
-    impl Drop for FormatGuard {
-        fn drop(&mut self) {
-            unsafe { CoTaskMemFree(Some(self.0.cast())) }
-        }
-    }
-    let wave_guard = FormatGuard(wave_pointer);
-    let mix = MixFormat::from_wave_format(wave_guard.0)?;
-
-    audio_client
-        .Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK,
-            0,
-            0,
-            wave_guard.0,
-            None,
-        )
-        .map_err(|error| error.to_string())?;
-    let capture: IAudioCaptureClient = audio_client
-        .GetService()
-        .map_err(|error| error.to_string())?;
     let produced = Arc::new(AtomicU64::new(0));
     let (sender, writer) = spawn_writer(Arc::clone(&produced));
-    let mut resampler = LinearResampler::new(mix.sample_rate);
-
-    audio_client.Start().map_err(|error| error.to_string())?;
+    let mut stream = Some(LoopbackStream::open(&enumerator)?);
+    let started = Instant::now();
+    let mut last_audio = started;
+    let mut last_poll = started;
     eprintln!("READY");
     let capture_result: Result<(), String> = (|| {
         while !stop.load(Ordering::Acquire) && !CONSOLE_STOP.load(Ordering::Acquire) {
-            let mut packet_frames = capture
-                .GetNextPacketSize()
-                .map_err(|error| error.to_string())?;
-            if packet_frames == 0 {
-                thread::sleep(Duration::from_millis(5));
-                continue;
-            }
-            while packet_frames > 0 {
-                let mut data: *mut u8 = std::ptr::null_mut();
-                let mut frames = 0u32;
-                let mut flags = Default::default();
-                capture
-                    .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
-                    .map_err(|error| error.to_string())?;
-                let byte_count = frames as usize * mix.block_align;
-                let bytes = if data.is_null() {
-                    &[]
-                } else {
-                    slice::from_raw_parts(data, byte_count)
-                };
-                let silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-                let decoded = mix.decode_mono(bytes, frames as usize, silent);
-                capture
-                    .ReleaseBuffer(frames)
-                    .map_err(|error| error.to_string())?;
-                let output = resampler.process(&decoded?);
-                if !send_bounded(&sender, output, &produced) {
-                    return Ok(());
+            let now = Instant::now();
+            if now.duration_since(last_poll) >= DEVICE_POLL {
+                last_poll = now;
+                let current = default_device_id(&enumerator);
+                if current.is_some() && current != stream.as_ref().and_then(|s| s.device_id.clone()) {
+                    // The default output changed (e.g. headphones connected): follow it.
+                    stream = LoopbackStream::open(&enumerator).ok();
                 }
-                packet_frames = capture
-                    .GetNextPacketSize()
-                    .map_err(|error| error.to_string())?;
+            }
+            let Some(active) = stream.as_mut() else {
+                fill_silence(&sender, &produced, started, &mut last_audio);
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            };
+            match active.drain(&sender, &produced) {
+                Ok(Drained::Audio) => last_audio = Instant::now(),
+                Ok(Drained::Idle) => {
+                    fill_silence(&sender, &produced, started, &mut last_audio);
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Ok(Drained::WriterClosed) => return Ok(()),
+                Err(error) if error.code() == AUDCLNT_E_DEVICE_INVALIDATED => {
+                    // The device disappeared; keep time with silence until a new default appears.
+                    stream = None;
+                    last_poll = started;
+                }
+                Err(error) => return Err(error.to_string()),
             }
         }
         Ok(())
     })();
-    let stop_result: WindowsResult<()> = audio_client.Stop();
+    let stop_result = stream.as_ref().map_or(Ok(()), |s| unsafe { s.client.Stop() });
     drop(sender);
     let writer_result = writer
         .join()
         .map_err(|_| "stdout writer panicked".to_string())?;
     writer_result.map_err(|error| format!("stdout: {error}"))?;
-    stop_result.map_err(|error| error.to_string())?;
+    if !matches!(&stop_result, Err(error) if error.code() == AUDCLNT_E_DEVICE_INVALIDATED) {
+        stop_result.map_err(|error| error.to_string())?;
+    }
     capture_result?;
     eprintln!("STOPPED");
     Ok(())

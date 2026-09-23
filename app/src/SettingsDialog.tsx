@@ -18,6 +18,10 @@ export type SettingsDialogProps = {
   onClose: () => void;
 };
 
+/** The local model process died after it was ready (QWEN_MODEL_EXITED / connection lost), as opposed to failing to load. */
+export const modelStoppedRunning = (error?: string | null) => Boolean(error && /进程已退出|连接中断/.test(error));
+const storedFields = (settings: Settings) => ({ engine: settings.engine, executable: settings.executable, modelPath: settings.modelPath, mmprojPath: settings.mmprojPath, customVocabulary: settings.customVocabulary ?? [], autoPolish: settings.autoPolish ?? false, theme: settings.theme ?? 'system' });
+
 export function SettingsDialog({ settings, session, project, runtime, initialEngine, onSave, onPick, onInstall, onPrepare, onClose }: SettingsDialogProps) {
   const [value, setValue] = useState(() => ({ ...settings, engine: initialEngine ?? settings.engine, customVocabulary: settings.customVocabulary ?? [], autoPolish: settings.autoPolish ?? false, theme: settings.theme ?? 'system' }));
   const [vocabularyScope, setVocabularyScope] = useState<'global' | 'project' | 'session'>(() => session ? 'session' : project ? 'project' : 'global');
@@ -30,7 +34,7 @@ export function SettingsDialog({ settings, session, project, runtime, initialEng
   const [error, setError] = useState('');
   const [keyConfigured, setKeyConfigured] = useState(Boolean(runtime.cloudKeyConfigured));
   const [deepseekConfigured, setDeepseekConfigured] = useState(Boolean(runtime.deepseekKeyConfigured));
-  const savedPaths = useRef([settings.engine, settings.executable, settings.modelPath, settings.mmprojPath, JSON.stringify(settings.customVocabulary ?? []), String(settings.autoPolish ?? false), settings.theme ?? 'system'].join('\0'));
+  const seenStored = useRef(storedFields(settings));
   const panel = useRef<HTMLElement>(null);
   const cloud = value.engine === 'soniox';
   const download = runtime.modelDownload;
@@ -39,10 +43,11 @@ export function SettingsDialog({ settings, session, project, runtime, initialEng
   useEffect(() => setKeyConfigured(Boolean(runtime.cloudKeyConfigured)), [runtime.cloudKeyConfigured]);
   useEffect(() => setDeepseekConfigured(Boolean(runtime.deepseekKeyConfigured)), [runtime.deepseekKeyConfigured]);
   useEffect(() => {
-    const next = [settings.engine, settings.executable, settings.modelPath, settings.mmprojPath, JSON.stringify(settings.customVocabulary ?? []), String(settings.autoPolish ?? false), settings.theme ?? 'system'].join('\0');
-    if (savedPaths.current === next) return;
-    savedPaths.current = next;
-    setValue((current) => ({ ...current, engine: settings.engine, executable: settings.executable, modelPath: settings.modelPath, mmprojPath: settings.mmprojPath, customVocabulary: settings.customVocabulary ?? [], autoPolish: settings.autoPolish ?? false, theme: settings.theme ?? 'system' }));
+    const next = storedFields(settings);
+    const previous = seenStored.current;
+    const changed = (Object.keys(next) as (keyof typeof next)[]).filter((key) => JSON.stringify(next[key]) !== JSON.stringify(previous[key]));
+    seenStored.current = next;
+    if (changed.length) setValue((current) => ({ ...current, ...Object.fromEntries(changed.map((key) => [key, next[key]])) }));
   }, [settings.engine, settings.executable, settings.modelPath, settings.mmprojPath, settings.customVocabulary, settings.autoPolish, settings.theme]);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -71,7 +76,7 @@ export function SettingsDialog({ settings, session, project, runtime, initialEng
   const installed = runtime.localModelInstalled ?? (settings.engine !== 'soniox' && (runtime.modelInstalled ?? runtime.modelReady ?? false));
   const sameEngine = (['engine', 'executable', 'modelPath', 'mmprojPath', 'language'] as const).every((key) => value[key] === settings[key]);
   const modelState = prepareState === 'loading' ? 'loading' : runtime.modelState ?? (runtime.modelReady ? 'ready' : 'unloaded');
-  const healthTitle = value.engine === 'whisper' ? '请选择实时转写引擎' : !sameEngine ? '保存后准备所选模型' : !installed ? '需要下载本地模型' : modelState === 'ready' ? '本地模型已就绪' : modelState === 'loading' ? '正在加载模型' : modelState === 'error' || prepareState === 'error' ? '模型准备失败' : '等待加载模型';
+  const healthTitle = value.engine === 'whisper' ? '请选择实时转写引擎' : !sameEngine ? '保存后准备所选模型' : !installed ? '需要下载本地模型' : modelState === 'ready' ? '本地模型已就绪' : modelState === 'loading' ? '正在加载模型' : modelState === 'error' && modelStoppedRunning(runtime.modelError) ? '本地模型已停止运行' : modelState === 'error' || prepareState === 'error' ? '模型准备失败' : '等待加载模型';
   const normalizeVocabulary = (entries: string[]) => {
     const vocabulary = entries.map((entry) => entry.trim()).filter(Boolean);
     if (vocabulary.length > 200 || vocabulary.some((entry) => new TextEncoder().encode(entry).byteLength > 200) || new TextEncoder().encode(vocabulary.join('\n')).byteLength > 10000) throw new Error('每个词表最多 200 条，每条不超过 200 字节，总计不超过 10 KB。');
@@ -127,7 +132,7 @@ export function SettingsDialog({ settings, session, project, runtime, initialEng
         <div className="model-health"><HardDrive size={20} /><div><strong>{downloading ? download?.phase === 'verifying' ? '正在校验模型' : '正在下载模型' : healthTitle}</strong><span>{value.engine === 'whisper' ? 'Whisper 实时录音尚未启用，请选择 Qwen 或 Soniox。' : 'Qwen3-ASR-0.6B（Q8） · 音频在这台电脑上识别'}</span></div></div>
         {value.engine === 'qwen' && (!installed || downloading) && <div className="download-model"><div><strong>下载本地模型</strong><span>约 1.02 GB · 下载后可离线使用</span></div><button className="primary-button" disabled={downloading || runtime.cloudProcessing} onClick={async () => { setInstallState('downloading'); const ok = await onInstall(); setInstallState(ok ? 'done' : 'error'); }}>{downloading ? download?.phase === 'verifying' ? '校验中…' : '下载中…' : download?.phase === 'error' ? '继续下载' : '下载模型'}</button>{downloading && <div className="model-download-progress" role="status"><progress max="100" value={downloadPercent} aria-label="本地模型下载进度" /><span>{download?.phase === 'verifying' ? '正在检查文件完整性…' : `${downloadPercent}% · ${Math.round((download?.downloadedBytes ?? 0) / 1_000_000)} / ${Math.round((download?.totalBytes ?? 1_019_141_728) / 1_000_000)} MB`}</span></div>}{(installState === 'error' || download?.phase === 'error') && <p className="inline-error">{download?.error || '下载暂时中断，已下载的部分会保留。请检查网络后继续。'}</p>}</div>}
         <p className="settings-help">安装包只包含应用程序。本地模型按需下载，已下载的模型可重复使用。</p>
-        {value.engine !== 'whisper' && sameEngine && installed && modelState !== 'ready' && <div className="prepare-model"><div>{runtime.modelError && <p className="inline-error">{runtime.modelError}</p>}<span>加载完成后即可开始录音。</span></div><button className="secondary-button" disabled={modelState === 'loading'} onClick={async () => { setPrepareState('loading'); const ok = await onPrepare(); setPrepareState(ok ? 'idle' : 'error'); }}>{modelState === 'loading' ? '正在准备…' : '准备模型'}</button></div>}
+        {value.engine !== 'whisper' && sameEngine && installed && modelState !== 'ready' && <div className="prepare-model">{runtime.modelError && <p className="inline-error model-error-detail">{runtime.modelError}</p>}<div><span>{modelStoppedRunning(runtime.modelError) ? '已保存的录音不受影响，重新准备模型后可继续转写。' : '加载完成后即可开始录音。'}</span></div><button className="secondary-button" disabled={modelState === 'loading'} onClick={async () => { setPrepareState('loading'); const ok = await onPrepare(); setPrepareState(ok ? 'idle' : 'error'); }}>{modelState === 'loading' ? '正在准备…' : '准备模型'}</button></div>}
         <details className="advanced-settings"><summary>模型文件与引擎路径</summary>{pathField('executable', '引擎程序', runtime.defaultExecutable || '选择识别引擎')}{pathField('modelPath', '模型文件', runtime.defaultModelPath || '选择模型文件')}{value.engine !== 'whisper' && pathField('mmprojPath', '音频投影文件', runtime.defaultMmprojPath || '选择投影文件')}</details>
       </>}
       <label className="form-field"><span>{cloud ? '语言提示' : '识别语言'}</span><select value={value.language} onChange={(event) => setValue({ ...value, language: event.target.value })}><option value="auto">自动检测</option><option value="en">英语</option><option value="zh">中文</option></select></label>

@@ -189,6 +189,14 @@ pub fn import_lecture(input: &Path, audio_root: &Path) -> Result<Session, String
     }
     package.session.project_id = None;
     validate_session(&package.session)?;
+    package.session.runs.iter().try_fold(0_u64, |total, run| {
+        run.samples
+            .checked_mul(2)
+            .filter(|bytes| *bytes <= MAX_AUDIO_ENTRY_BYTES)
+            .and_then(|bytes| total.checked_add(bytes))
+            .filter(|total| *total <= MAX_TOTAL_BYTES)
+            .ok_or("ARCHIVE_TOO_LARGE")
+    })?;
 
     let old_id = package.session.id.clone();
     let new_id = Uuid::new_v4().to_string();
@@ -245,6 +253,7 @@ fn extract_audio(
 ) -> Result<HashSet<String>, String> {
     let expected: HashSet<&str> = session.runs.iter().map(|run| run.id.as_str()).collect();
     let mut extracted = HashSet::new();
+    let mut written = 0_u64;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).map_err(zip_error)?;
         let name = entry.name().to_string();
@@ -260,14 +269,19 @@ fn extract_audio(
         }
         let run = session.runs.iter().find(|run| run.id == run_id).unwrap();
         let expected_bytes = run.samples.checked_mul(2).ok_or("AUDIO_TOO_LARGE")?;
+        // The central directory's size is attacker-controlled; bound what is actually inflated.
+        if entry.size() != expected_bytes || expected_bytes > MAX_AUDIO_ENTRY_BYTES {
+            return Err("AUDIO_LENGTH_MISMATCH".into());
+        }
         let target = temporary.join(format!("{run_id}.pcm"));
         let mut output = File::create(target).map_err(io_error)?;
-        let copied = std::io::copy(
-            &mut entry.by_ref().take(MAX_AUDIO_ENTRY_BYTES + 1),
-            &mut output,
-        )
-        .map_err(io_error)?;
-        if copied > MAX_AUDIO_ENTRY_BYTES || copied != expected_bytes || copied % 2 != 0 {
+        let copied = std::io::copy(&mut entry.by_ref().take(expected_bytes + 1), &mut output)
+            .map_err(io_error)?;
+        written = written.checked_add(copied).ok_or("ARCHIVE_TOO_LARGE")?;
+        if written > MAX_TOTAL_BYTES {
+            return Err("ARCHIVE_TOO_LARGE".into());
+        }
+        if copied != expected_bytes || copied % 2 != 0 {
             return Err("AUDIO_LENGTH_MISMATCH".into());
         }
         output.sync_all().map_err(io_error)?;
@@ -490,6 +504,54 @@ mod tests {
             "MISSING_AUDIO_FILE"
         );
         assert_eq!(fs::read_dir(&audio).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn package_with_audio(root: &Path, session: Session, audio: &[u8]) -> std::path::PathBuf {
+        fs::create_dir_all(root).unwrap();
+        let archive = root.join("package.lecture");
+        let mut writer = ZipWriter::new(File::create(&archive).unwrap());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        writer.start_file("lecture.json", options).unwrap();
+        writer
+            .write_all(
+                &serde_json::to_vec(&LecturePackage {
+                    schema_version: 1,
+                    session,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        writer.start_file("audio/run-1.pcm", options).unwrap();
+        writer.write_all(audio).unwrap();
+        writer.finish().unwrap();
+        archive
+    }
+
+    #[test]
+    fn import_rejects_audio_larger_than_the_manifest_before_inflating_it() {
+        let root = std::env::temp_dir().join(format!("lectureedit-bomb-{}", Uuid::new_v4()));
+        let archive = package_with_audio(&root, fixture(), &vec![0; 4 * 1024 * 1024]);
+        let audio = root.join("audio");
+        assert_eq!(
+            import_lecture(&archive, &audio).unwrap_err(),
+            "AUDIO_LENGTH_MISMATCH"
+        );
+        assert_eq!(fs::read_dir(&audio).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_rejects_declared_audio_beyond_the_total_budget() {
+        let root = std::env::temp_dir().join(format!("lectureedit-budget-{}", Uuid::new_v4()));
+        let mut session = fixture();
+        session.runs[0].samples = MAX_AUDIO_ENTRY_BYTES;
+        let archive = package_with_audio(&root, session, &[0; 8]);
+        assert_eq!(
+            import_lecture(&archive, &root.join("audio")).unwrap_err(),
+            "ARCHIVE_TOO_LARGE"
+        );
+        assert!(!root.join("audio").exists());
         let _ = fs::remove_dir_all(root);
     }
 }

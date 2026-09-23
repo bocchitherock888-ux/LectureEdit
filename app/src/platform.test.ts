@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normaliseDesktopPlatform, shortcutLabel, canExportNativePdf } from './platform';
+import { normaliseDesktopPlatform, shortcutLabel, canExportNativePdf, isPrimaryShortcut } from './platform';
 
 describe('Windows portability UI', () => {
   it('recognises Windows and macOS platform names', () => {
@@ -17,6 +17,12 @@ describe('Windows portability UI', () => {
     expect(shortcutLabel('k', 'MacIntel')).toBe('⌘K');
     expect(shortcutLabel('Enter', 'macos')).toBe('⌘↵');
     expect(shortcutLabel('Enter', 'MacIntel', 'alt')).toBe('⌥↵');
+  });
+  it('accepts only the platform primary modifier', () => {
+    expect(isPrimaryShortcut({ metaKey: true, ctrlKey: false }, 'MacIntel')).toBe(true);
+    expect(isPrimaryShortcut({ metaKey: false, ctrlKey: true }, 'MacIntel')).toBe(false);
+    expect(isPrimaryShortcut({ metaKey: false, ctrlKey: true }, 'Win32')).toBe(true);
+    expect(isPrimaryShortcut({ metaKey: true, ctrlKey: false }, 'Win32')).toBe(false);
   });
   it('advertises only the implemented native PDF platform', () => {
     expect(canExportNativePdf('macos')).toBe(true);

@@ -25,7 +25,7 @@ When a lecturer's name is transcribed incorrectly, correct it while you remember
 
 ## Downloads and platforms
 
-The current version is **0.1.0 beta**.
+The current version is **0.1.1 beta**.
 
 | Platform | Status |
 |---|---|
@@ -33,6 +33,8 @@ The current version is **0.1.0 beta**.
 | Windows x64, 64-bit Intel / AMD PCs | Unsigned NSIS beta installer provided. Live recording and transcription on a real PC are still pending. |
 
 For Mac, download the appropriate package from [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases), move LectureEdit to Applications and open it. The current Mac build is ad-hoc signed and awaits Apple notarisation. After checking the download source, follow the system prompt under System Settings → Privacy & Security to allow it to open.
+
+On Windows, run `LectureEdit_*_windows-x64_multi_setup.exe`. To upgrade, run the new installer over the old version: it removes the old version and installs to the same folder. Courses, recordings and the downloaded model are kept unless you tick "Delete the application data".
 
 The local model downloads separately on first use. Packaged-app users complete setup inside LectureEdit.
 

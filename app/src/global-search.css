@@ -20,6 +20,7 @@
 .library-search-location time { margin-left: auto; white-space: nowrap; }
 .library-search-excerpt { font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; }
 .library-search-excerpt mark { color: #234c9a; background: rgb(99 143 235 / 16%); border-radius: 3px; }
+html[data-theme="dark"] .library-search-excerpt mark { color: #cddcff; background: rgb(124 161 255 / 24%); }
 .library-search-anchor { min-height: 18px; display: flex; align-items: center; gap: 5px; color: #657593; font-size: 11px; font-variant-numeric: tabular-nums; }
 .library-search-anchor > svg:last-child { width: 16px; height: 16px; flex: 0 0 auto; margin-left: auto; padding: 1px; color: #7a86a0; }
 .library-search-play { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; margin-right: 16px; border: 1px solid rgb(255 255 255 / 90%); border-radius: 50%; color: #4067b6; background: rgb(255 255 255 / 85%); box-shadow: 0 2px 8px rgb(35 50 90 / 8%); cursor: pointer; }

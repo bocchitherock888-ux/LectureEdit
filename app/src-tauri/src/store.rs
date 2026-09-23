@@ -37,7 +37,7 @@ impl Store {
             .map_err(db_error)?;
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
             )
             .map_err(db_error)?;
         connection.execute_batch(SCHEMA).map_err(db_error)?;

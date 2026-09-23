@@ -1,3 +1,4 @@
+use crate::native_process::SpawnTied;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::{
@@ -256,7 +257,7 @@ pub fn system(helper: PathBuf) -> Result<Source, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_tied()
         .map_err(|e| e.to_string())?;
     let mut out = child.stdout.take().ok_or("系统声音管道不可用")?;
     let err = child.stderr.take().ok_or("系统声音错误管道不可用")?;

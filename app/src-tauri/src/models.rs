@@ -65,10 +65,11 @@ pub fn downloaded_file_sizes_match(model_path: &Path, mmproj_path: &Path) -> boo
 }
 
 pub fn defaults(root: &Path, resources: &Path) -> Value {
+    // Developer cache only; without HOME (typical on Windows) fall back to the app's own root
+    // rather than a path relative to whatever the working directory happens to be.
     let cache = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join(".cache/lectureedit");
+        .map(|home| PathBuf::from(home).join(".cache/lectureedit"))
+        .unwrap_or_else(|| root.to_path_buf());
     let exe_name = if cfg!(windows) {
         "llama-server.exe"
     } else {
@@ -99,8 +100,20 @@ fn verified(path: &Path, size: u64, hash: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let mut f = File::open(path).map_err(|e| e.to_string())?;
-    if f.metadata().map_err(|e| e.to_string())?.len() != size {
+    let metadata = f.metadata().map_err(|e| e.to_string())?;
+    if metadata.len() != size {
         return Ok(false);
+    }
+    // Hashing ~1 GB on every launch competes with model loading; a stamp keyed on the expected hash,
+    // size and modification time lets unchanged files skip it. Any rewrite changes the mtime.
+    let stamp_path = verification_stamp_path(path);
+    let stamp = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| format!("{hash} {size} {}", age.as_nanos()));
+    if stamp.is_some() && fs::read_to_string(&stamp_path).ok() == stamp {
+        return Ok(true);
     }
     let mut digest = Sha256::new();
     let mut buf = vec![0; 1024 * 1024];
@@ -111,7 +124,17 @@ fn verified(path: &Path, size: u64, hash: &str) -> Result<bool, String> {
         }
         digest.update(&buf[..n]);
     }
-    Ok(format!("{:x}", digest.finalize()) == hash)
+    let matches = format!("{:x}", digest.finalize()) == hash;
+    if let (true, Some(stamp)) = (matches, stamp) {
+        let _ = fs::write(&stamp_path, stamp);
+    }
+    Ok(matches)
+}
+
+fn verification_stamp_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".verified");
+    path.with_file_name(name)
 }
 
 fn content_range_matches(value: Option<&str>, start: u64, total: u64) -> bool {
@@ -575,6 +598,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(root.path().join("model.bin")).unwrap(), bytes);
+    }
+
+    #[test]
+    fn verification_stamp_skips_rehash_until_the_file_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("model.bin");
+        fs::write(&path, b"weights").unwrap();
+        let expected = hash(b"weights");
+        assert!(verified(&path, 7, &expected).unwrap());
+        assert!(verification_stamp_path(&path).is_file());
+        assert!(verified(&path, 7, &expected).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, b"WEIGHTS").unwrap();
+        assert!(!verified(&path, 7, &expected).unwrap());
     }
 
     #[test]
