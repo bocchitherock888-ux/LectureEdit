@@ -67,6 +67,13 @@ const fmtTime = (samples: number) => {
   const minutes = Math.floor(total / 60);
   return `${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 };
+/** Paragraph start on the course clock: run offset plus the position inside that run. */
+const segmentClock = (session: Session, segment: Segment) => (session.runs.find((run) => run.id === segment.runId)?.offsetMs ?? 0) * 16 + segment.startSample;
+/** Chinese characters count one each; Latin text counts by words. */
+const countWords = (segments: Segment[]) => segments.reduce((sum, segment) => {
+  const text = segment.displayText;
+  return sum + (text.match(/[\u3400-\u9fff]/g)?.length ?? 0) + (text.replace(/[\u3400-\u9fff]/g, ' ').match(/[A-Za-z0-9'’-]+/g)?.length ?? 0);
+}, 0);
 const fmtDuration = (samples: number) => {
   const total = Math.max(0, Math.floor(samples / 16000));
   const hours = Math.floor(total / 3600);
@@ -104,6 +111,11 @@ function RecordGlyph({ state }: { state: 'ready' | 'starting' | 'recording' | 'p
   return <span className={`record-glyph is-${state}`} aria-hidden="true"><span /></span>;
 }
 
+/** Decorative activity bars: they signal a live capture, not a measured level. */
+function LevelMeter({ live }: { live: boolean }) {
+  return <span className={`level-meter ${live ? 'is-live' : ''}`} aria-hidden="true"><i /><i /><i /><i /><i /></span>;
+}
+
 function EmptyTranscriptState({ session, samples, demo, cloud, cloudReady, legacyEngine, retryDisabled, runtime, onStart, onImport, onRetry, onPrepare, onSetup }: { session: Session; samples: number; demo: boolean; cloud: boolean; cloudReady: boolean; legacyEngine: boolean; retryDisabled: boolean; runtime: RuntimeInfo; onStart: () => void; onImport: () => void; onRetry: () => void; onPrepare: () => void; onSetup: () => void }) {
   const captureActive = ['starting', 'recording', 'paused', 'stopping'].includes(session.recordingState);
   const processing = ['loading', 'running', 'catching_up'].includes(session.inferenceState);
@@ -111,7 +123,7 @@ function EmptyTranscriptState({ session, samples, demo, cloud, cloudReady, legac
   if (captureActive) {
     const heading = session.recordingState === 'starting' ? '正在准备录音…' : session.recordingState === 'paused' ? '录音已暂停' : session.recordingState === 'stopping' ? '正在完成录音…' : '正在录音';
     const status = cloud ? session.inferenceState === 'paused' ? '云端转写已暂停，录音继续保存在本机' : '正在连接云端实时转写' : inferenceLabel[session.inferenceState] || '正在准备本地转写';
-    return <div className="empty-state capture-active"><div className="capture-symbol"><Mic size={25} /><span /></div><h2>{heading}</h2><p>{status}。识别出的内容会自动出现在这里。</p><div className="capture-progress" role="status" aria-label={`已录制 ${fmtDuration(samples)}`}><strong>{fmtDuration(samples)}</strong><span>录音已保存在本机</span></div></div>;
+    return <div className="empty-state capture-active"><div className={`capture-symbol is-${session.recordingState}`}><span /></div><h2>{heading}</h2><p>{status}。识别出的内容会自动出现在这里。</p><div className="capture-progress" role="status" aria-label={`已录制 ${fmtDuration(samples)}`}><strong>{fmtDuration(samples)}</strong><LevelMeter live={session.recordingState === 'recording'} /><span>录音已保存在本机</span></div></div>;
   }
   const installed = runtime.modelInstalled ?? runtime.modelReady ?? false;
   const modelState = runtime.modelState ?? (runtime.modelReady ? 'ready' : 'unloaded');
@@ -124,7 +136,7 @@ function EmptyTranscriptState({ session, samples, demo, cloud, cloudReady, legac
   }
   if (hasAudio && processing) return <div className="empty-state processing-state"><Clock3 size={31} /><h2>录音已结束，正在处理</h2><p>{cloud ? '云端正在完成转写' : inferenceLabel[session.inferenceState]}。新的转写块会自动显示在这里。</p><div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>录音已保存在本机</span></div></div>;
   if (hasAudio) return <div className="empty-state"><FileAudio size={31} /><h2>录音已结束</h2><p>当前录音还没有生成可显示的转写。音频已经保存在本机，可以重新尝试转写。</p><div className="capture-progress"><strong>{fmtDuration(samples)}</strong><span>录音已保存在本机</span></div><button className="secondary-button" disabled={retryDisabled} onClick={onRetry}><ArchiveRestore size={16} /> {retryDisabled ? '另一课程正在转写' : '重试转写'}</button></div>;
-  return <div className="empty-state"><Mic size={32} /><h2>等待课程开始</h2><p>使用麦克风开始录音，或导入 WAV 文件。本地转写继续运行时，你可以随时修订已出现的内容。</p><div><button className="record-button record-button-prominent is-ready" onClick={onStart}><RecordGlyph state="ready" /><span>{demo ? '预览录音状态' : '开始录音'}</span></button><button className="secondary-button" onClick={onImport}><FileAudio size={16} /> 导入 WAV</button></div></div>;
+  return <div className="empty-state idle-state"><p className="empty-eyebrow">{session.title}</p><button className="record-hero" onClick={onStart} aria-label={demo ? '预览录音状态' : '开始录音'}><span /></button><h2>等待课程开始</h2><p>点击红色按钮开始录音，或导入已有的 WAV 文件。转写进行时，你可以随时修订已出现的内容。</p><div><button className="secondary-button" onClick={onImport}><FileAudio size={16} /> 导入 WAV</button></div></div>;
 }
 
 function Formula({ latex }: { latex: string }) {
@@ -565,6 +577,17 @@ export default function App() {
   const selectedIdRef = useRef<string | null>(selected?.id ?? null); selectedIdRef.current = selected?.id ?? null;
   const activeSegment = selected?.segments.find((s) => s.id === editor?.draft.segmentId) ?? null;
   const totalSamples = useMemo(() => selected?.runs.reduce((sum, run) => sum + run.samples, 0) ?? 0, [selected?.runs]);
+  const wordCount = useMemo(() => countWords(selected?.segments ?? []), [selected?.segments]);
+  const [introHidden, setIntroHidden] = useState(false);
+  const hasTranscript = Boolean(selected?.segments.length);
+  useEffect(() => {
+    const root = transcriptRef.current;
+    const intro = transcriptContentRef.current?.querySelector('.session-intro');
+    if (!root || !intro || typeof IntersectionObserver === 'undefined') { setIntroHidden(false); return; }
+    const observer = new IntersectionObserver(([entry]) => setIntroHidden(!entry.isIntersecting), { root, rootMargin: '-64px 0px 0px 0px' });
+    observer.observe(intro);
+    return () => observer.disconnect();
+  }, [selected?.id, hasTranscript, fullEditor?.sessionId]);
   useEffect(() => {
     const preference = state?.settings.theme ?? 'system';
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1077,6 +1100,7 @@ export default function App() {
     <CourseSidebar projects={state.projects ?? []} sessions={state.sessions} selectedId={state.selectedSessionId} expanded={sidebarExpanded} revealProjectId={sidebarRevealProjectId ?? selected?.projectId ?? null} onToggle={() => setSidebarExpanded(value => !value)} onSearch={() => setSearchOpen(true)} onSelect={setSelected} onNew={() => { setNewProjectId(null); setModal('new'); }} onNewProjectCourse={(projectId) => { setNewProjectId(projectId); setModal('new'); }} onCreateProject={createProject} onRenameProject={renameProject} onMove={moveSession} onRename={(sessionId, title) => { const next = title.trim(); if (next && next !== state.sessions.find((session) => session.id === sessionId)?.title) void update(adapter.dispatch({ type: 'renameSession', commandId: commandId(), sessionId, title: next })); }} onImport={() => void importCoursePackage()} />
     <GlassSurface className="workspace">
       <header className="topbar" aria-label="课程工具栏">
+        <div className={`topbar-title ${introHidden ? 'is-visible' : ''}`} aria-hidden={!introHidden}>{selectedProject && <><span>{selectedProject.title}</span><ChevronRight size={12} strokeWidth={1.8} /></>}<strong>{selected?.title}</strong></div>
         <div className="toolbar-group reading-tools" aria-label="阅读工具">
           <IconButton label="搜索所有课堂" active={searchOpen} onClick={() => setSearchOpen(true)}><Search size={17} /></IconButton>
           {selected?.segments.length ? <button className={`follow-control ${viewMode === 'following' ? '' : 'is-paused'}`} aria-label={viewMode === 'following' ? `修订当前句，快捷键 ${shortcutLabel('E')}` : unseen ? `${unseen} 条新内容，回到实时` : '回到实时'} title={fullEditor ? '完成全文编辑后可修订单句' : viewMode === 'following' ? `修订当前句 · ${shortcutLabel('E')}` : '回到实时'} onClick={viewMode === 'following' ? editCurrentSentence : returnLatest} disabled={Boolean(editor || fullEditor)}>{viewMode === 'following' ? <><Pencil size={14} /> <span>修订当前句</span><kbd>{shortcutLabel('E')}</kbd></> : <><ChevronDown className="return-chevron" size={14} strokeWidth={1.9} /> <span>{unseen ? `${unseen} 条 · 回到实时` : '回到实时'}</span></>}</button> : null}
@@ -1091,7 +1115,7 @@ export default function App() {
         </div>
         <div className="toolbar-group capture-tools" title={selected ? `${recordingStatusLabel} · ${inferenceStatusLabel}` : undefined}>
           {selected && ['recording', 'paused'].includes(selected.recordingState) && <button className={`record-pause-button ${selected.recordingState === 'paused' ? 'is-paused' : ''}`} onClick={() => void toggleRecordingPause()} disabled={Boolean(captureActionPending)} aria-label={selected.recordingState === 'paused' ? '继续录音' : '暂停录音'} title={selected.recordingState === 'paused' ? '继续录音' : '暂停录音'}>{captureActionPending === 'pause' ? <><Pause size={14} /> <span>暂停中…</span></> : captureActionPending === 'resume' ? <><Play size={14} fill="currentColor" /> <span>继续中…</span></> : selected.recordingState === 'paused' ? <><Play size={14} fill="currentColor" /> <span>继续录音</span></> : <><Pause size={14} fill="currentColor" /> <span>暂停录音</span></>}</button>}
-          <button className={`record-button is-${recordVisualState}`} onClick={toggleRecording} disabled={!selected || Boolean(captureActionPending) || selected?.recordingState === 'stopping' || (!captureInProgress && startBlocked)}><RecordGlyph state={recordVisualState} /><span>{captureActionPending === 'stop' ? '正在结束…' : captureActionPending === 'start' ? cloudEngine ? '正在连接…' : '正在启动…' : captureInProgress ? selected?.recordingState === 'stopping' ? '正在结束…' : '停止录音' : adapter.mode === 'demo' ? '开始演示' : displayedInferenceState === 'loading' && !legacyEngine ? '正在准备…' : startBlocked ? legacyEngine ? '选择引擎' : cloudBusyElsewhere ? '云端忙碌' : cloudEngine ? '配置云端' : '模型未就绪' : '开始录音'}</span></button>
+          <button className={`record-button is-${recordVisualState}`} onClick={toggleRecording} aria-label={['recording', 'paused'].includes(recordVisualState) ? '停止录音' : undefined} disabled={!selected || Boolean(captureActionPending) || selected?.recordingState === 'stopping' || (!captureInProgress && startBlocked)}><RecordGlyph state={recordVisualState} />{['recording', 'paused'].includes(recordVisualState) && <><span className="record-timer">{fmtDuration(totalSamples)}</span><LevelMeter live={recordVisualState === 'recording'} /></>}<span className="record-label">{captureActionPending === 'stop' ? '正在结束…' : captureActionPending === 'start' ? cloudEngine ? '正在连接…' : '正在启动…' : captureInProgress ? selected?.recordingState === 'stopping' ? '正在结束…' : '停止录音' : adapter.mode === 'demo' ? '开始演示' : displayedInferenceState === 'loading' && !legacyEngine ? '正在准备…' : startBlocked ? legacyEngine ? '选择引擎' : cloudBusyElsewhere ? '云端忙碌' : cloudEngine ? '配置云端' : '模型未就绪' : '开始录音'}</span></button>
         </div>
         <div className="toolbar-group action-tools" aria-label="文件与设置">
           <div className="menu-wrap" ref={exportWrapRef}><button ref={exportButtonRef} className="export-button" aria-label="导出" aria-haspopup="menu" aria-expanded={exportOpen} title="导出" onClick={() => { setExportOpen((open) => !open); setEngineOpen(false); setMoreOpen(false); }} onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setExportOpen(true); setEngineOpen(false); setMoreOpen(false); requestAnimationFrame(() => exportMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()); } }}><Download size={15} /><span>导出</span><ChevronDown className={`control-chevron ${exportOpen ? 'is-open' : ''}`} size={13} strokeWidth={1.9} /></button>{exportOpen && <div ref={exportMenuRef} className="export-menu" role="menu" onKeyDown={moveMenuFocus}>{([['markdown', 'Markdown', FileText], ['html', '课程阅读 HTML', BookOpen], ['pdf', '精排 PDF', FileText], ['wav', 'WAV 音频', FileAudio], ['lecture', '原生课程包', ArchiveRestore]] as const).map(([format, label, Icon]) => <button role="menuitem" key={format} disabled={format === 'pdf' && !canExportNativePdf(runtime.platform)} title={format === 'pdf' && !canExportNativePdf(runtime.platform) ? PDF_PLATFORM_NOTICE : undefined} onClick={() => { setExportOpen(false); if (selected) void saveFullDocument().then((saved) => { if (saved) return adapter.exportSession(selected.id, format); }).catch(showError); }}><Icon size={16} /><span><strong>{label}</strong><small>{format === 'lecture' ? '可再次导入 LectureEdit' : format === 'wav' ? '导出原始课程录音' : format === 'pdf' ? (canExportNativePdf(runtime.platform) ? '适合打印与阅读的版式' : 'macOS 功能 · Windows 可导出 HTML 后打印') : '包含转写和课堂资料'}</small></span></button>)}</div>}</div>
@@ -1113,13 +1137,13 @@ export default function App() {
             <div className="transcript-column" ref={transcriptContentRef}>
               {fullEditor && fullEditor.sessionId === selected.id ? <FullTranscriptEditor session={selected} values={fullEditor.values} original={fullEditor.original} status={fullEditor.status} error={fullEditor.error} onText={(segmentId, text) => setFullEditor((value) => value ? { ...value, values: { ...value.values, [segmentId]: text }, status: 'editing', error: '' } : value)} onSave={() => void saveFullDocument()} onDone={() => void saveFullDocument(true)} /> :
               <TranscriptAssist segments={selected.segments} sessionId={selected.id} configured={Boolean(runtime.deepseekKeyConfigured)} onSave={async (segmentId, text, sourceLabel) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId, kind: 'note', text, sourceLabel, imageData: null })))}>
-              <div className="session-intro"><div><div className="session-title-row"><h2>{selected.title}</h2>{adapter.mode === 'demo' && <span className="demo-label">演示</span>}</div><p className="session-meta"><span>{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }).format(selected.createdAt)}</span><span>{cloudEngine ? 'Soniox · stt-rt-v5' : selected.runs[0]?.source === 'import' ? '导入音频 · 本地转写' : selected.runs[0]?.source === 'system' ? '系统声音 · 本地转写' : '麦克风 · 本地转写'}</span><span className="saved-state"><Check size={13} /> 已保存</span></p></div><button className="full-edit-trigger" onClick={() => void beginFullEdit()} disabled={captureInProgress} title={captureInProgress ? '录音结束后编辑全文' : '在连续页面中编辑完整文稿'}><Pencil size={14} /> 编辑全文</button></div>
-              {transcriptGroups.map((group, groupIndex) => <section className={`transcript-paragraph ${groupIndex >= transcriptGroups.length - 3 ? 'is-recent' : ''}`} key={group.map((segment) => segment.id).join('|')}><p>{group.map((segment, index) => {
+              <div className="session-intro"><div>{selectedProject && <p className="session-crumb"><Folder size={13} strokeWidth={1.8} /><span>{selectedProject.title}</span></p>}<div className="session-title-row"><h2>{selected.title}</h2>{adapter.mode === 'demo' && <span className="demo-label">演示</span>}</div><p className="session-meta"><span>{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }).format(selected.createdAt)}</span>{totalSamples > 0 && <span className="meta-number">{fmtDuration(totalSamples)}</span>}<span className="meta-number">{wordCount.toLocaleString('zh-CN')} 字</span><span>{cloudEngine ? 'Soniox · stt-rt-v5' : selected.runs[0]?.source === 'import' ? '导入音频 · 本地转写' : selected.runs[0]?.source === 'system' ? '系统声音 · 本地转写' : '麦克风 · 本地转写'}</span><span className="saved-state"><Check size={13} /> 已保存</span></p></div><button className="full-edit-trigger" onClick={() => void beginFullEdit()} disabled={captureInProgress} title={captureInProgress ? '录音结束后编辑全文' : '在连续页面中编辑完整文稿'}><Pencil size={14} /> 编辑全文</button></div>
+              {transcriptGroups.map((group, groupIndex) => <section className={`transcript-paragraph ${groupIndex >= transcriptGroups.length - 3 ? 'is-recent' : ''}`} key={group.map((segment) => segment.id).join('|')}><button className="paragraph-time" tabIndex={-1} aria-label={`从 ${fmtTime(segmentClock(selected, group[0]))} 播放`} title="从这里播放" onClick={() => void playSegment(group[0])}>{fmtTime(segmentClock(selected, group[0]))}</button><p>{group.map((segment, index) => {
                 const entering = seenSessionRef.current === selected.id && seenSegmentsRef.current.size > 0 && !seenSegmentsRef.current.has(segment.id);
                 return <Fragment key={segment.id}>{index > 0 ? ' ' : null}<TranscriptBlock segment={segment} active={editor?.draft.segmentId === segment.id} playingKey={playingSegmentId} entering={entering} query="" onEdit={() => void beginEdit(segment)} onPlay={(anchor, playbackKey) => void playSegment(segment, anchor, playbackKey)} onUndo={() => void moveSegmentHistory(segment, 'undo')} onRedo={() => void moveSegmentHistory(segment, 'redo')} onReview={() => { setReviewSegment(segment.id); setModal('review'); }} composer={(sliceKey) => <InlineNoteComposer open={noteSegment === sliceKey} onOpenChange={(open) => { setNoteSegment(open ? sliceKey : null); if (open) setViewMode('reading_history'); }} kind={noteKind} setKind={setNoteKind} configured={Boolean(runtime.deepseekKeyConfigured)} onSubmit={async (value) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId: segment.id, ...value })))} />} /></Fragment>;
               })}</p>{group.flatMap((segment) => selected.notes.filter((note) => note.segmentId === segment.id)).map((note) => <NoteBlock key={note.id} note={note} onRemove={() => void update(adapter.dispatch({ type: 'removeNote', commandId: commandId(), sessionId: selected.id, noteId: note.id }))} />)}</section>)}
               <div className="transcript-follow-anchor" ref={followAnchorRef} aria-hidden="true" />
-              <div className="transcript-end"><span />{selected.recordingState === 'recording' ? <p><span className="live-caret" />等待下一段内容</p> : <p>转写结束</p>}<span /></div>
+              <div className="transcript-end"><span />{selected.recordingState === 'recording' ? <p><span className="live-caret" />等待下一段内容</p> : <p>转写结束{totalSamples > 0 && <> · {fmtDuration(totalSamples)}</>}</p>}<span /></div>
               </TranscriptAssist>}
             </div>
           </div>}

@@ -32,7 +32,7 @@
   --glass-fill: rgb(253 253 254 / .7);
   --glass-fill-strong: rgb(251 251 252 / .9);
   --menu-fill: #fbfbfc;
-  --sidebar-fill: rgb(244 244 246 / .82);
+  --sidebar-fill: rgb(246 246 248 / .64);
   --glass-rim: rgb(255 255 255 / .75);
   --glass-specular: inset 0 1px 0 rgb(255 255 255 / .9), inset 0 0 0 1px rgb(255 255 255 / .28);
   --glass-hairline: 0 0 0 .5px rgb(0 0 0 / .085);
@@ -41,6 +41,9 @@
   --focus-ring: 0 0 0 3px rgb(var(--accent-rgb) / .2);
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none' stroke='%238e8e93' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 3.75 5 6.25l2.5-2.5'/%3E%3C/svg%3E");
   --spring: cubic-bezier(.32, .72, 0, 1);
+  --record-red: radial-gradient(circle at 38% 30%, #ff6f66 0%, #ff3b30 52%, #e5281f 100%);
+  --record-ring: rgb(0 0 0 / .13);
+  --record-ink: #d62c22;
 
   color: var(--ink);
   background: var(--app);
@@ -72,12 +75,14 @@ html[data-theme="dark"] {
   --glass-fill: rgb(46 46 50 / .66);
   --glass-fill-strong: rgb(42 42 46 / .92);
   --menu-fill: #28282c;
-  --sidebar-fill: rgb(34 34 37 / .86);
+  --sidebar-fill: rgb(36 36 40 / .72);
   --glass-rim: rgb(255 255 255 / .1);
   --glass-specular: inset 0 1px 0 rgb(255 255 255 / .09), inset 0 0 0 1px rgb(255 255 255 / .045);
   --glass-hairline: 0 0 0 .5px rgb(0 0 0 / .6);
   --glass-shadow-small: var(--glass-hairline), 0 6px 18px rgb(0 0 0 / .28);
   --glass-shadow: var(--glass-hairline), 0 18px 48px rgb(0 0 0 / .42);
+  --record-ring: rgb(255 255 255 / .2);
+  --record-ink: #ff6961;
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10' fill='none' stroke='%23a1a1a7' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 3.75 5 6.25l2.5-2.5'/%3E%3C/svg%3E");
 }
 
@@ -282,30 +287,97 @@ html[data-theme="dark"] .source-select {
 .source-select:hover, html[data-theme="dark"] .source-select:hover { color: var(--ink); background-color: var(--fill-active); }
 .source-select:disabled { cursor: default; opacity: .5; }
 
+/*
+ * Record control, modelled on Voice Memos: a red disc inside a thin ring.
+ * No slab of colour: the red is the only signal, and it earns attention because
+ * nothing else in the toolbar is red. While capturing, the disc becomes a stop
+ * square and the capsule shows the running time with live activity bars.
+ */
 .record-button,
 html[data-theme="dark"] .record-button {
   height: 34px;
   min-height: 34px;
-  gap: 7px;
-  padding: 0 14px 0 10px;
+  gap: 8px;
+  padding: 0 13px 0 5px;
   border: 0;
   border-radius: 999px;
-  color: var(--on-ink);
-  background: var(--ink);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / .14), 0 1px 2px rgb(0 0 0 / .18);
-  font-size: 12px;
-  font-weight: 620;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: background 160ms var(--spring), color 160ms var(--spring), transform 120ms var(--spring);
 }
 .record-button:hover:not(:disabled),
-html[data-theme="dark"] .record-button:hover:not(:disabled) { color: var(--on-ink); border: 0; background: color-mix(in srgb, var(--ink) 86%, var(--document)); box-shadow: inset 0 1px 0 rgb(255 255 255 / .14), 0 2px 6px rgb(0 0 0 / .2); }
+html[data-theme="dark"] .record-button:hover:not(:disabled) { color: var(--ink); border: 0; background: var(--fill-active); box-shadow: none; }
+.record-button:active:not(:disabled) { transform: scale(.96); }
 .record-button:disabled,
-html[data-theme="dark"] .record-button:disabled { color: var(--muted); background: var(--fill-active); box-shadow: none; }
-.record-glyph { width: 14px; height: 14px; flex-basis: 14px; border: 0; background: transparent; box-shadow: none; }
-.record-glyph > span { width: 9px; height: 9px; background: #ff3b30; box-shadow: 0 0 0 2px rgb(255 59 48 / .22); }
+html[data-theme="dark"] .record-button:disabled { color: var(--faint); background: transparent; box-shadow: none; opacity: 1; }
+
+.record-glyph,
+html[data-theme="dark"] .record-glyph {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1.5px var(--record-ring), 0 1px 2px rgb(0 0 0 / .07);
+}
+.record-glyph > span {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--record-red);
+  box-shadow: inset 0 -1px 1.5px rgb(120 0 0 / .18), inset 0 1px 1px rgb(255 255 255 / .3);
+  transition: width 220ms var(--spring), height 220ms var(--spring), border-radius 220ms var(--spring), transform 160ms var(--spring), background 160ms var(--spring);
+}
+.record-button:hover:not(:disabled) .record-glyph > span { transform: scale(1.08); }
 .record-glyph.is-recording > span,
 .record-glyph.is-paused > span,
-.record-glyph.is-stopping > span { width: 9px; height: 9px; border-radius: 2px; box-shadow: none; }
-.record-glyph.is-blocked > span { background: var(--faint); box-shadow: none; }
+.record-glyph.is-stopping > span { width: 9px; height: 9px; border-radius: 2.5px; background: var(--record-red); box-shadow: none; transform: none; }
+.record-button:hover:not(:disabled) .record-glyph.is-recording > span { transform: none; }
+.record-glyph.is-blocked > span { width: 10px; height: 10px; background: var(--faint); box-shadow: none; }
+.record-glyph.is-starting > span { width: 10px; height: 10px; }
+.record-glyph.is-starting::after,
+.record-glyph.is-stopping::after {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid transparent;
+  border-top-color: rgb(255 59 48 / .9);
+  border-radius: 50%;
+  opacity: 1;
+  transform: none;
+  animation: record-spin .8s linear infinite;
+  content: "";
+}
+.record-glyph.is-recording { box-shadow: inset 0 0 0 1.5px rgb(255 59 48 / .45); animation: record-breathe 2.4s ease-in-out infinite; }
+
+.record-button.is-recording,
+.record-button.is-paused,
+html[data-theme="dark"] .record-button.is-recording,
+html[data-theme="dark"] .record-button.is-paused { gap: 9px; padding-right: 14px; color: var(--record-ink); background: rgb(255 59 48 / .09); }
+.record-button.is-recording:hover:not(:disabled),
+.record-button.is-paused:hover:not(:disabled),
+html[data-theme="dark"] .record-button.is-recording:hover:not(:disabled),
+html[data-theme="dark"] .record-button.is-paused:hover:not(:disabled) { color: var(--record-ink); background: rgb(255 59 48 / .14); }
+.record-button.is-recording .record-label,
+.record-button.is-paused .record-label { display: none; }
+.record-button.is-paused { color: var(--muted); }
+.record-timer { min-width: 38px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+
+.level-meter { height: 14px; display: inline-flex; align-items: center; gap: 2px; }
+.level-meter i { width: 2.5px; height: 100%; border-radius: 2px; background: currentColor; opacity: .85; transform: scaleY(.22); transform-origin: center; }
+.level-meter.is-live i { animation: level 1.1s ease-in-out infinite alternate; }
+.level-meter.is-live i:nth-child(2) { animation-duration: .8s; animation-delay: -.3s; }
+.level-meter.is-live i:nth-child(3) { animation-duration: 1.3s; animation-delay: -.6s; }
+.level-meter.is-live i:nth-child(4) { animation-duration: .9s; animation-delay: -.2s; }
+.level-meter.is-live i:nth-child(5) { animation-duration: 1.2s; animation-delay: -.8s; }
+@keyframes level { 0% { transform: scaleY(.2); } 45% { transform: scaleY(.9); } 70% { transform: scaleY(.45); } 100% { transform: scaleY(1); } }
+@keyframes record-spin { to { transform: rotate(360deg); } }
+@keyframes record-breathe { 0%, 100% { box-shadow: inset 0 0 0 1.5px rgb(255 59 48 / .45), 0 0 0 0 rgb(255 59 48 / .28); } 50% { box-shadow: inset 0 0 0 1.5px rgb(255 59 48 / .45), 0 0 0 4px rgb(255 59 48 / 0); } }
+
 .record-pause-button,
 html[data-theme="dark"] .record-pause-button { height: 34px; min-height: 34px; padding: 0 11px; border: 0; border-radius: 999px; color: var(--ink-2); background: transparent; box-shadow: none; font-size: 12px; font-weight: 560; }
 .record-pause-button:hover, .record-pause-button:focus-visible,
@@ -614,3 +686,149 @@ html[data-theme="dark"] .transcript-paragraph mark { color: inherit; background:
 html[data-theme="dark"] .note-block header > .note-source { color: var(--faint); font-weight: 400; }
 /* Menus sit inside glass capsules; a nested backdrop filter makes Chromium (WebView2) paint content through them. They are near-opaque anyway. */
 .export-menu, html[data-theme="dark"] .export-menu { -webkit-backdrop-filter: none; backdrop-filter: none; }
+
+/* ── Page header: breadcrumb, title, quiet facts ───────────────────────── */
+.session-crumb { display: flex; align-items: center; gap: 5px; margin: 0 0 10px; color: var(--muted); font-size: 12.5px; font-weight: 500; }
+.session-crumb svg { color: var(--faint); }
+.session-meta .meta-number { font-variant-numeric: tabular-nums; }
+.session-intro,
+html[data-theme="dark"] .session-intro { margin-bottom: 34px; padding-bottom: 24px; }
+
+/* The title follows into the toolbar once the page header scrolls away. */
+.topbar-title {
+  min-width: 0;
+  flex: 0 1 auto;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: auto;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 12.5px;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 200ms var(--spring), transform 260ms var(--spring);
+  pointer-events: none;
+}
+.topbar-title.is-visible { opacity: 1; transform: none; }
+.topbar-title > span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar-title > svg { flex: 0 0 auto; color: var(--faint); }
+.topbar-title strong { min-width: 0; overflow: hidden; color: var(--ink); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Time gutter: each paragraph carries its place on the lecture clock ── */
+.paragraph-time { display: none; }
+@media (min-width: 1180px) {
+  /* The paragraph reaches into the margin so the stamp stays inside its paint box. */
+  .transcript-paragraph { margin-left: -84px; padding-left: 84px; }
+  .paragraph-time {
+    position: absolute;
+    top: calc((var(--reader-font) * 1.7 - 20px) / 2);
+    left: 8px;
+    width: 58px;
+    height: 20px;
+    display: block;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    color: var(--faint);
+    background: transparent;
+    font: 500 11px/20px -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .02em;
+    text-align: right;
+    opacity: .7;
+    cursor: pointer;
+    transition: opacity 140ms var(--spring), color 140ms var(--spring), background 140ms var(--spring);
+  }
+  .transcript-paragraph:hover > .paragraph-time { opacity: 1; }
+  .paragraph-time:hover { color: var(--accent-deep); background: var(--accent-soft); opacity: 1; }
+}
+
+.transcript-end { margin-top: 56px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+/* ── Empty and capture states ──────────────────────────────────────────── */
+.empty-state h2, html[data-theme="dark"] .empty-state h2 { margin: 26px 0 8px; color: var(--ink); font-size: 21px; font-weight: 650; letter-spacing: -.022em; }
+.empty-state p { color: var(--muted); font-size: 13.5px; }
+.record-hero {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--field);
+  box-shadow: inset 0 0 0 3px var(--record-ring), 0 1px 2px rgb(0 0 0 / .06), 0 10px 30px rgb(0 0 0 / .06);
+  cursor: pointer;
+  transition: transform 160ms var(--spring), box-shadow 200ms var(--spring);
+}
+.record-hero > span {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: var(--record-red);
+  box-shadow: inset 0 -2px 4px rgb(120 0 0 / .18), inset 0 2px 2px rgb(255 255 255 / .28), 0 6px 18px rgb(255 59 48 / .3);
+  transition: transform 220ms var(--spring), box-shadow 220ms var(--spring);
+}
+.record-hero:hover > span { transform: scale(.94); box-shadow: inset 0 -2px 4px rgb(120 0 0 / .18), inset 0 2px 2px rgb(255 255 255 / .28), 0 8px 24px rgb(255 59 48 / .4); }
+.record-hero:active { transform: scale(.96); }
+.record-hero:active > span { transform: scale(.86); }
+html[data-theme="dark"] .record-hero { box-shadow: inset 0 0 0 3px var(--record-ring), 0 10px 30px rgb(0 0 0 / .3); }
+.idle-state > div { margin-top: 2px; }
+
+.capture-symbol,
+.capture-symbol.is-recording { width: 76px; height: 76px; border-radius: 50%; color: var(--record-ink); background: rgb(255 59 48 / .08); }
+.capture-symbol > span,
+.capture-symbol span { position: relative; inset: auto; width: 20px; height: 20px; border: 0; border-radius: 50%; background: var(--record-red); box-shadow: 0 4px 12px rgb(255 59 48 / .35); }
+.capture-symbol.is-recording::before,
+.capture-symbol.is-recording::after { position: absolute; inset: 0; border: 1.5px solid rgb(255 59 48 / .35); border-radius: 50%; content: ""; animation: capture-ripple 2.4s cubic-bezier(.2, .6, .3, 1) infinite; }
+.capture-symbol.is-recording::after { animation-delay: 1.2s; }
+.capture-symbol.is-paused > span { border-radius: 4px; background: var(--faint); box-shadow: none; }
+@keyframes capture-ripple { from { opacity: 1; transform: scale(.55); } to { opacity: 0; transform: scale(1.25); } }
+.capture-progress,
+html[data-theme="dark"] .capture-progress { min-width: 0; margin: 4px 0 18px; padding: 0; gap: 10px !important; border: 0; }
+.capture-progress strong,
+html[data-theme="dark"] .capture-progress strong { color: var(--ink); font: 300 44px/1 -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.capture-progress .level-meter { height: 22px; gap: 3px; color: var(--record-ink); }
+.capture-progress .level-meter i { width: 3px; }
+.capture-progress span:not(.level-meter) { color: var(--faint); font-size: 11.5px; }
+
+/* ── Ambient light: gives the sidebar glass something to refract ──────── */
+.app-shell,
+html[data-theme="dark"] .app-shell {
+  background:
+    radial-gradient(520px 420px at 0% 0%, rgb(var(--accent-rgb) / .13), transparent 70%),
+    radial-gradient(460px 480px at 0% 100%, rgb(255 149 64 / .10), transparent 70%),
+    var(--document);
+}
+html[data-theme="dark"] .app-shell {
+  background:
+    radial-gradient(420px 360px at 0% 0%, rgb(var(--accent-rgb) / .12), transparent 70%),
+    radial-gradient(380px 420px at 0% 100%, rgb(191 90 242 / .07), transparent 70%),
+    var(--document);
+}
+.workspace, html[data-theme="dark"] .workspace { background: transparent; }
+
+/* ── Touch response: controls acknowledge the press, not the release ──── */
+.icon-button:active, .follow-control:active, .engine-button:active, .export-button:active,
+.pending-button:active, .full-edit-trigger:active, .primary-button:active, .secondary-button:active,
+.course-select:active, .sidebar-search:active { transform: scale(.97); }
+.icon-button, .follow-control, .engine-button, .export-button, .pending-button, .full-edit-trigger,
+.primary-button, .secondary-button, .course-select, .sidebar-search { transition: background 140ms var(--spring), color 140ms var(--spring), transform 120ms var(--spring), box-shadow 140ms var(--spring); }
+.export-menu { transform-origin: top right; animation: menu-in 180ms var(--spring); }
+
+@media (prefers-reduced-motion: reduce) {
+  .level-meter.is-live i, .record-glyph.is-recording, .capture-symbol::before, .capture-symbol::after { animation: none; }
+  .level-meter.is-live i { transform: scaleY(.6); }
+}
+
+/* Controls never wrap; the floating title gives way first. */
+.toolbar-group { flex-shrink: 0; }
+.toolbar-group button, .toolbar-group select { white-space: nowrap; }
+/* Pause sits beside the timer as a plain glyph; the timer already says what is happening. */
+.record-pause-button,
+html[data-theme="dark"] .record-pause-button { width: 34px; padding: 0; justify-content: center; }
+.record-pause-button span { display: none; }
+.empty-state .empty-eyebrow { max-width: 420px; margin: 0 0 22px; overflow: hidden; color: var(--faint); font-size: 12.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
