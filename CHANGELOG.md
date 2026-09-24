@@ -8,7 +8,7 @@
 - If the microphone disconnects mid-lecture, recording switches to another input and continues; the gap is marked
 - A short guide (8 steps) opens the first time the app starts with an empty library. It can be skipped, and reopened from Settings
 - DeepSeek auto-polish failures show as a small mark next to the toolbar instead of a notice; hover it for the reason
-- macOS: the sentence toolbar (修订, 笔记, 翻译, 回放) did nothing when clicked, and live text could be drawn blank or over the next sentence; both fixed
+- Mac: the sentence toolbar (修订, 笔记, 翻译, 回放) did nothing when clicked, and live text could be drawn blank or over the next sentence; both fixed. Windows did not have these problems
 - ⌘E / Ctrl+E edits the sentence you clicked, or the newest one if none is selected
 - The window fetches only what changed instead of the whole library every 700 ms, and only the live paragraph redraws
 - Sentences split across recognition chunks are merged when polished; note cards, the sentence toolbar and live follow scrolling were refined
