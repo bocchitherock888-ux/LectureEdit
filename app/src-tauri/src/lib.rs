@@ -11,6 +11,19 @@ mod soniox;
 pub mod store;
 use std::sync::Arc;
 use tauri::Manager;
+/// Runs an optional command, then returns only what changed since `since`.
+#[tauri::command]
+async fn sync(
+    command: Option<serde_json::Value>,
+    epoch: String,
+    since: u64,
+    state: tauri::State<'_, Arc<runtime::Runtime>>,
+) -> Result<Box<serde_json::value::RawValue>, String> {
+    let runtime = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.sync(command, &epoch, since))
+        .await
+        .map_err(|e| e.to_string())?
+}
 #[tauri::command]
 async fn dispatch(
     command: serde_json::Value,
@@ -87,6 +100,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            sync,
             dispatch,
             audio_data,
             runtime_info,

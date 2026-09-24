@@ -124,6 +124,10 @@ export interface RuntimeInfo {
   defaultMmprojPath?: string;
   systemAudioAvailable?: boolean;
   defaults?: Partial<Settings>;
+  /** Lectures or settings that could not be read at startup and were set aside. */
+  recovered?: string[];
+  /** Outcome of the latest automatic DeepSeek polish. */
+  autoPolish?: { state: 'idle' | 'ok' | 'error'; message?: string; at?: number };
 }
 
 export type DomainCommand = { type: string; commandId?: string; [key: string]: unknown };

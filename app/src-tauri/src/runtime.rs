@@ -357,6 +357,8 @@ pub struct Runtime {
     soniox_key: Mutex<Option<String>>,
     deepseek_credential: Arc<Mutex<DeepSeekCredential>>,
     auto_polish_scheduled: Arc<Mutex<HashSet<String>>>,
+    /// Outcome of the most recent automatic polish, so a failure is visible.
+    auto_polish_status: Arc<Mutex<Value>>,
     auto_polish_generation: Arc<Mutex<HashMap<String, u64>>>,
     cloud: Mutex<Option<CloudTask>>,
 }
@@ -364,7 +366,7 @@ impl Runtime {
     pub fn new(root: PathBuf, resources: PathBuf) -> Result<Arc<Self>, String> {
         fs::create_dir_all(root.join("audio")).map_err(|e| e.to_string())?;
         fs::create_dir_all(root.join("jobs")).map_err(|e| e.to_string())?;
-        let mut store = Store::open(&root.join("lectureedit.sqlite"))?;
+        let mut store = Store::open_or_recover(&root.join("lectureedit.sqlite"))?;
         let defaults = crate::models::defaults(&root, &resources);
         store.mutate(|s| {
             let mut v = serde_json::to_value(&*s).map_err(|e| e.to_string())?;
@@ -444,6 +446,7 @@ impl Runtime {
                 epoch: 0,
             })),
             auto_polish_scheduled: Arc::new(Mutex::new(HashSet::new())),
+            auto_polish_status: Arc::new(Mutex::new(json!({"state":"idle"}))),
             auto_polish_generation: Arc::new(Mutex::new(HashMap::new())),
             cloud: Mutex::new(None),
         });
@@ -473,22 +476,24 @@ impl Runtime {
             .ok_or("课程不存在")?;
         serde_json::to_value(session).map_err(|e| e.to_string())
     }
-    fn update<F>(&self, sid: &str, f: F) -> Result<State, String>
+    fn update<F>(&self, sid: &str, f: F) -> Result<(), String>
     where
         F: FnOnce(&mut Value) -> Result<(), String>,
     {
         self.store
             .lock()
             .map_err(|_| "数据写入器不可用")?
-            .mutate(|s| {
-                let mut v = serde_json::to_value(&*s).map_err(|e| e.to_string())?;
-                let session = v["sessions"]
-                    .as_array_mut()
-                    .and_then(|a| a.iter_mut().find(|v| v["id"] == sid))
+            .change(|s| {
+                // Round-trip only this lecture through JSON, not the library.
+                let slot = s
+                    .sessions
+                    .iter_mut()
+                    .find(|session| session.id == sid)
                     .ok_or("课程不存在")?;
-                f(session)?;
+                let mut session = serde_json::to_value(&*slot).map_err(|e| e.to_string())?;
+                f(&mut session)?;
                 session["operationSeq"] = json!(session["operationSeq"].as_u64().unwrap_or(0) + 1);
-                *s = serde_json::from_value(v).map_err(|e| e.to_string())?;
+                *slot = serde_json::from_value(session).map_err(|e| e.to_string())?;
                 Ok(())
             })
     }
@@ -502,6 +507,20 @@ impl Runtime {
             }] = json!("error");
             Ok(())
         });
+    }
+    pub fn sync(
+        self: &Arc<Self>,
+        command: Option<Value>,
+        epoch: &str,
+        since: u64,
+    ) -> Result<Box<serde_json::value::RawValue>, String> {
+        if let Some(command) = command.filter(|command| command["type"] != "snapshot") {
+            self.dispatch(command)?;
+        }
+        self.store
+            .lock()
+            .map_err(|_| "数据写入器不可用")?
+            .delta_json(epoch, since)
     }
     pub fn dispatch(self: &Arc<Self>, command: Value) -> Result<State, String> {
         let kind = command["type"].as_str().unwrap_or("");
@@ -978,6 +997,20 @@ impl Runtime {
         }
     }
     pub fn info(&self) -> Value {
+        let mut info = self.runtime_status();
+        info["autoPolish"] = self
+            .auto_polish_status
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|_| json!({"state":"idle"}));
+        info["recovered"] = self
+            .store
+            .lock()
+            .map(|store| json!(store.recovered()))
+            .unwrap_or_else(|_| json!([]));
+        info
+    }
+    fn runtime_status(&self) -> Value {
         let settings = self
             .store
             .lock()
@@ -1090,7 +1123,8 @@ impl Runtime {
     }
 
     fn schedule_auto_polish(&self, sid: &str, segment_id: &str) {
-        let Ok(state) = self.snapshot() else { return };
+        let Ok(store) = self.store.lock() else { return };
+        let state = store.state();
         if !state.settings.auto_polish {
             return;
         }
@@ -1120,10 +1154,12 @@ impl Runtime {
         if !auto_polish_trigger_safe(session, segment) {
             return;
         }
+        let generation_key = format!("{sid}\0{}", segment.run_id);
+        drop(store);
         let store = self.store.clone();
+        let status = self.auto_polish_status.clone();
         let session_id = sid.to_owned();
         let trigger_id = segment_id.to_owned();
-        let generation_key = format!("{sid}\0{}", segment.run_id);
         let generations = self.auto_polish_generation.clone();
         let Some(generation) = advance_auto_polish_generation(&generations, &generation_key) else {
             return;
@@ -1135,10 +1171,8 @@ impl Runtime {
             if !claim_auto_polish_generation(&generations, &generation_key, generation) {
                 return;
             }
-            let snapshot = match store.lock() {
-                Ok(store) => store.snapshot(),
-                Err(_) => return,
-            };
+            let Ok(guard) = store.lock() else { return };
+            let snapshot = guard.state();
             if !snapshot.settings.auto_polish {
                 return;
             }
@@ -1164,7 +1198,9 @@ impl Runtime {
             if tail_open && end - start < 2 {
                 return;
             }
-            let candidates = &session.segments[start..end];
+            // Copy just this paragraph so the library is unlocked during the request.
+            let candidates = session.segments[start..end].to_vec();
+            drop(guard);
             let schedule_key = candidates
                 .iter()
                 .map(|segment| {
@@ -1194,7 +1230,15 @@ impl Runtime {
                     },
                 )
             });
-            let Ok(result) = result else { return };
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    if let Ok(mut status) = status.lock() {
+                        *status = json!({"state":"error","message":error,"sessionId":session_id,"at":now()});
+                    }
+                    return;
+                }
+            };
             if credential.lock().map_or(true, |value| value.epoch != epoch) {
                 return;
             }
@@ -1220,7 +1264,7 @@ impl Runtime {
                 })
                 .collect();
             let Ok(mut store) = store.lock() else { return };
-            if !store.snapshot().settings.auto_polish {
+            if !store.state().settings.auto_polish {
                 return;
             }
             let Ok(credential_guard) = credential.lock() else {
@@ -1229,7 +1273,7 @@ impl Runtime {
             if credential_guard.epoch != epoch {
                 return;
             }
-            let _ = store.dispatch(json!({
+            let applied = store.apply(json!({
                 "type":"polishSegments",
                 "commandId":uid(),
                 "sessionId":session_id,
@@ -1237,6 +1281,13 @@ impl Runtime {
                 "segments":outputs
             }));
             drop(credential_guard);
+            drop(store);
+            if let Ok(mut status) = status.lock() {
+                // A conflict means the text changed meanwhile; that is not a failure.
+                if applied.is_ok() || status["state"] == "error" {
+                    *status = json!({"state":"ok","at":now()});
+                }
+            }
         });
     }
     fn soniox_configuration(&self, sid: &str) -> Result<(String, String, Vec<String>), String> {
@@ -1614,6 +1665,21 @@ impl Runtime {
             while !flag.load(Ordering::Relaxed) && !runtime.exit.load(Ordering::Relaxed) {
                 for (start, end) in input.gaps.try_iter() {
                     let _ = archiver.gap(start, end, "采集队列音频缺口");
+                }
+                for notice in input.notices.try_iter() {
+                    let message = match notice {
+                        capture::MicrophoneNotice::Lost(name) => {
+                            archiver.gap_reason = Some("麦克风切换");
+                            format!("麦克风“{name}”已断开，正在切换到其他输入设备，录音会继续")
+                        }
+                        capture::MicrophoneNotice::Switched(name) => {
+                            format!("已切换到“{name}”继续录音，断开期间记为音频缺口")
+                        }
+                    };
+                    let _ = runtime.update(&session, |s| {
+                        s["error"] = json!(message);
+                        Ok(())
+                    });
                 }
                 if let Ok(e) = input.errors.try_recv() {
                     failed = Some(e);
@@ -2298,7 +2364,7 @@ fn commit_cloud_update(
         .store
         .lock()
         .map_err(|_| "数据写入器不可用")?
-        .dispatch(json!({"type":"machine","commandId":uid(),"sessionId":sid,"segmentId":segment_id,"runId":rid,"startSample":start,"endSample":end,"text":update.text,"revision":revision,"workerEpoch":epoch,"final":update.final_result,"allowFinalRangeShrink":update.final_result}))?;
+        .apply(json!({"type":"machine","commandId":uid(),"sessionId":sid,"segmentId":segment_id,"runId":rid,"startSample":start,"endSample":end,"text":update.text,"revision":revision,"workerEpoch":epoch,"final":update.final_result,"allowFinalRangeShrink":update.final_result}))?;
     if update.final_result {
         runtime.schedule_auto_polish(sid, &segment_id);
     }
@@ -2378,6 +2444,8 @@ struct Archiver {
     last_sync: u64,
     /// Digital-zero samples seen since recording began, while still watching for a muted input.
     muted_samples: Option<u64>,
+    /// Why the next jump in the input timeline happened, when the source said so.
+    gap_reason: Option<&'static str>,
 }
 /// A microphone the OS will not let us hear delivers exact zeros instead of an error
 /// (missing permission, or on macOS a build without the audio-input entitlement).
@@ -2411,6 +2479,7 @@ impl Archiver {
             last_partial: 0,
             last_sync: 0,
             muted_samples: None,
+            gap_reason: None,
         })
     }
     fn watch_for_muted_input(&mut self) {
@@ -2440,13 +2509,17 @@ impl Archiver {
         if frame.start > self.input_cursor {
             let lost = (frame.start - self.input_cursor) * 16000 / self.input_rate as u64;
             let start = self.samples;
-            self.runtime.update(&self.sid,|s|{s["gaps"].as_array_mut().ok_or("无效的缺口列表")?.push(json!({"runId":self.rid,"startSample":start,"endSample":start+lost,"reason":"采集队列溢出"}));s["error"]=json!("检测到音频缺口，已保留时间位置和缺口记录");Ok(())})?;
+            let reason = self.gap_reason.take().unwrap_or("采集队列溢出");
+            self.runtime.update(&self.sid,|s|{s["gaps"].as_array_mut().ok_or("无效的缺口列表")?.push(json!({"runId":self.rid,"startSample":start,"endSample":start+lost,"reason":reason}));if reason == "采集队列溢出" {s["error"]=json!("检测到音频缺口，已保留时间位置和缺口记录");}Ok(())})?;
+            // Padding is silence we wrote, not evidence of a muted microphone.
+            let watching = self.muted_samples.take();
             let mut remaining = lost;
             while remaining > 0 {
                 let n = remaining.min(16000) as usize;
                 self.pcm(&vec![0; n])?;
                 remaining -= n as u64;
             }
+            self.muted_samples = watching;
         }
         self.input_cursor = frame.start + frame.samples.len() as u64;
         let pcm = self.resampler.push(&frame.samples);
@@ -3455,13 +3528,13 @@ fn worker_loop(weak: Weak<Runtime>) {
                         })
                     })
                     .collect();
-                store.dispatch(json!({"type":"machineSegments","commandId":uid(),"sessionId":job.session,"runId":job.run,"segments":segments,"workerEpoch":epoch}))?;
+                store.apply(json!({"type":"machineSegments","commandId":uid(),"sessionId":job.session,"runId":job.run,"segments":segments,"workerEpoch":epoch}))?;
                 drop(store);
                 for segment in &final_segments {
                     runtime.schedule_auto_polish(&job.session, &segment.id);
                 }
             } else {
-                store.dispatch(json!({"type":"machine","commandId":uid(),"sessionId":job.session,"segmentId":job.id,"runId":job.run,"startSample":job.start,"endSample":job.end,"text":text,"revision":revision,"workerEpoch":epoch,"final":job.final_result}))?;
+                store.apply(json!({"type":"machine","commandId":uid(),"sessionId":job.session,"segmentId":job.id,"runId":job.run,"startSample":job.start,"endSample":job.end,"text":text,"revision":revision,"workerEpoch":epoch,"final":job.final_result}))?;
                 drop(store);
                 if job.final_result {
                     runtime.schedule_auto_polish(&job.session, &job.id);
@@ -3565,6 +3638,7 @@ mod tests {
             soniox_key: Mutex::new(None),
             deepseek_credential: Arc::new(Mutex::new(DeepSeekCredential::default())),
             auto_polish_scheduled: Arc::new(Mutex::new(HashSet::new())),
+            auto_polish_status: Arc::new(Mutex::new(json!({"state":"idle"}))),
             auto_polish_generation: Arc::new(Mutex::new(HashMap::new())),
             cloud: Mutex::new(None),
         })

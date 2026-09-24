@@ -37,3 +37,32 @@ jobs:
         run: |
           npm ci
           npm test
+      - name: Type check and build frontend
+        working-directory: app
+        run: npm run build
+
+  app:
+    # The desktop crate (storage, capture, recording runtime) is tested on the
+    # platform it is developed on; Windows is covered by windows-x64.yml.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build frontend the crate embeds
+        working-directory: app
+        run: |
+          npm ci
+          npm run build
+          mkdir -p src-tauri/resources/native src-tauri/resources/licenses
+      - name: Desktop crate tests
+        run: cargo test --manifest-path app/src-tauri/Cargo.toml --locked

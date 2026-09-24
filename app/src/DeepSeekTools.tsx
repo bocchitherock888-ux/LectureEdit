@@ -2,7 +2,7 @@ import { imeActive } from './ime';
 import { createContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, CircleAlert, KeyRound, Languages, LoaderCircle, ScanText, X } from 'lucide-react';
-import katex from 'katex';
+import { useKatex } from './katexLoader';
 import { adapter } from './bridge';
 import type { Segment } from './types';
 import './deepseek.css';
@@ -184,6 +184,7 @@ export function FormulaRecognitionPanel({ imageData, configured, disabled = fals
   const [ready, setReady] = useState(configured);
   const [showConnection, setShowConnection] = useState(false);
   const [busy, setBusy] = useState(false);
+  const katex = useKatex();
   const [latex, setLatex] = useState('');
   const [error, setError] = useState('');
   const generation = useRef(0);
@@ -200,7 +201,7 @@ export function FormulaRecognitionPanel({ imageData, configured, disabled = fals
     finally { if (request === generation.current) { pending.current = false; setBusy(false); } }
   };
   let html = '';
-  if (latex) { try { html = katex.renderToString(latex, { displayMode: true, throwOnError: true, trust: false, maxExpand: 1000 }); } catch { /* Raw output stays editable below. */ } }
+  if (latex && katex) { try { html = katex.renderToString(latex, { displayMode: true, throwOnError: true, trust: false, maxExpand: 1000 }); } catch { /* Raw output stays editable below. */ } }
   return <section className="formula-recognition" aria-label="图片公式识别">
     <div className="formula-action"><span><ScanText size={17} /><strong>图片转公式</strong></span><button type="button" className="secondary-button" disabled={disabled || busy || adapter.mode === 'demo'} onClick={() => void recognize()}>{busy ? <><LoaderCircle size={15} className="ai-spinner" /> 识别中…</> : '识别这张图片'}</button></div>
     <p className="ai-disclosure">发送这张图片到 DeepSeek，生成可编辑的 LaTeX 公式。</p>

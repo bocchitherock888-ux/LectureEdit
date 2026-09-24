@@ -2,43 +2,56 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import { demoAdapter } from './demo';
 import type { AppState, DomainCommand, LectureAdapter, RuntimeInfo } from './types';
-import { preparePdfExport } from './pdfExport';
 import { canExportNativePdf, PDF_PLATFORM_NOTICE } from './platform';
+import { applyDelta, type StateDelta, type SyncedState } from './sync';
 
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+// The library can be tens of megabytes; each call fetches only the lectures
+// that changed since the revision held here.
+let held: SyncedState | null = null;
+async function syncState(command?: DomainCommand): Promise<AppState> {
+  const delta = await invoke<StateDelta>('sync', { command: command ?? null, epoch: held?.epoch ?? '', since: held?.revision ?? 0 });
+  let next = applyDelta(held, delta);
+  // Never resend the command: it has already run. Just fetch everything.
+  if (!next) next = applyDelta(null, await invoke<StateDelta>('sync', { command: null, epoch: '', since: 0 }));
+  if (!next) throw new Error('无法读取课程数据，请重启 LectureEdit。');
+  held = next;
+  return next.state;
+}
+
 const nativeAdapter: LectureAdapter = {
   mode: 'native',
-  dispatch: (command: DomainCommand) => invoke<AppState>('dispatch', { command }),
+  dispatch: (command: DomainCommand) => syncState(command),
   runtimeInfo: () => invoke<RuntimeInfo>('runtime_info'),
-  startRecording: (sessionId, source) => invoke<AppState>('dispatch', { command: { type: 'startRecording', commandId: crypto.randomUUID(), sessionId, source } }),
-  pauseRecording: (sessionId) => invoke<AppState>('dispatch', { command: { type: 'pauseRecording', commandId: crypto.randomUUID(), sessionId } }),
-  stopRecording: (sessionId) => invoke<AppState>('dispatch', { command: { type: 'stopRecording', commandId: crypto.randomUUID(), sessionId } }),
-  retryInference: (sessionId) => invoke<AppState>('dispatch', { command: { type: 'retryInference', commandId: crypto.randomUUID(), sessionId } }),
+  startRecording: (sessionId, source) => syncState({ type: 'startRecording', commandId: crypto.randomUUID(), sessionId, source }),
+  pauseRecording: (sessionId) => syncState({ type: 'pauseRecording', commandId: crypto.randomUUID(), sessionId }),
+  stopRecording: (sessionId) => syncState({ type: 'stopRecording', commandId: crypto.randomUUID(), sessionId }),
+  retryInference: (sessionId) => syncState({ type: 'retryInference', commandId: crypto.randomUUID(), sessionId }),
   importAudio: async (sessionId) => {
     const path = await open({ multiple: false, filters: [{ name: 'WAV 音频', extensions: ['wav'] }] });
     if (!path) return null;
-    return invoke<AppState>('dispatch', { command: { type: 'importAudio', commandId: crypto.randomUUID(), sessionId, path } });
+    return syncState({ type: 'importAudio', commandId: crypto.randomUUID(), sessionId, path });
   },
   importPackage: async () => {
     const path = await open({ multiple: false, filters: [{ name: 'LectureEdit 课程包', extensions: ['lecture', 'zip'] }] });
     if (!path) return null;
-    return invoke<AppState>('dispatch', { command: { type: 'importPackage', commandId: crypto.randomUUID(), path } });
+    return syncState({ type: 'importPackage', commandId: crypto.randomUUID(), path });
   },
   exportSession: async (sessionId, format) => {
     if (format === 'pdf') {
       const runtime = await invoke<RuntimeInfo>('runtime_info');
       if (!canExportNativePdf(runtime.platform)) throw new Error(PDF_PLATFORM_NOTICE);
-      const state = await invoke<AppState>('dispatch', { command: { type: 'snapshot', sessionId } });
+      const state = await syncState({ type: 'snapshot', sessionId });
       const session = state.sessions.find((item) => item.id === sessionId);
       if (!session) throw new Error('找不到要导出的课程。');
       const fileName = `${session.title.replace(/[\\/:*?"<>|]/g, '-').trim() || 'LectureEdit course'}.pdf`;
       const path = await save({ defaultPath: fileName, filters: [{ name: '精排 PDF', extensions: ['pdf'] }] });
       if (!path) return;
-      const latestState = await invoke<AppState>('dispatch', { command: { type: 'snapshot', sessionId } });
+      const latestState = await syncState({ type: 'snapshot', sessionId });
       const latestSession = latestState.sessions.find((item) => item.id === sessionId);
       if (!latestSession) throw new Error('找不到要导出的课程。');
-      const prepared = await preparePdfExport(latestSession);
+      const prepared = await (await import('./pdfExport')).preparePdfExport(latestSession);
       try { await invoke('export_pdf', { path, pageCount: prepared.pageCount, pageRects: prepared.pageRects }); }
       finally { prepared.cleanup(); }
       return;

@@ -1,5 +1,5 @@
 import { imeActive } from './ime';
-import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArchiveRestore, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, Cloud, Download, FileAudio, Folder, FolderPlus, HardDrive,
   FileText, Image as ImageIcon, Languages, Mic, MoreHorizontal, Pause, Pencil, Play, Plus, Quote,
@@ -11,8 +11,6 @@ import {
 } from '@floating-ui/react';
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'motion/react';
 import { animate } from 'motion';
-import katex from 'katex';
-import 'katex/dist/katex.min.css';
 import { adapter } from './bridge';
 import { shortcutLabel, canExportNativePdf, isPrimaryShortcut, PDF_PLATFORM_NOTICE } from './platform';
 import { FormulaRecognitionPanel, TranscriptAssist, TranscriptTranslateContext } from './DeepSeekTools';
@@ -21,6 +19,7 @@ import { modelStoppedRunning, SettingsDialog } from './SettingsDialog';
 import { changedTranscriptSegments, persistTranscriptEdits, transcriptTextMap, TranscriptSaveError, type TranscriptTextMap } from './documentEditing';
 import { sentencePlaybackSlices, type SentencePlaybackSlice } from './sentencePlayback';
 import { followStep, nextFollowGoal, shouldPauseTranscriptFollow, transcriptFollowTarget } from './transcriptFollow';
+import { useKatex } from './katexLoader';
 import type { AppState, Draft, Note, NoteKind, Project, RuntimeInfo, Segment, Session } from './types';
 import { commandId } from './types';
 
@@ -69,6 +68,7 @@ const fmtTime = (samples: number) => {
   return `${String(minutes).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 };
 /** Paragraph start on the course clock: run offset plus the position inside that run. */
+const noNotes: Note[] = [];
 const segmentClock = (session: Session, segment: Segment) => (session.runs.find((run) => run.id === segment.runId)?.offsetMs ?? 0) * 16 + segment.startSample;
 /** Chinese characters count one each; Latin text counts by words. */
 const countWords = (segments: Segment[]) => segments.reduce((sum, segment) => {
@@ -141,6 +141,8 @@ function EmptyTranscriptState({ session, samples, demo, cloud, cloudReady, legac
 }
 
 function Formula({ latex }: { latex: string }) {
+  const katex = useKatex();
+  if (!katex) return <div className="formula-preview" aria-busy="true" />;
   try {
     return <div className="formula-preview" dangerouslySetInnerHTML={{ __html: katex.renderToString(latex, { displayMode: true, throwOnError: true, trust: false, strict: 'warn' }) }} />;
   } catch {
@@ -203,6 +205,32 @@ function streamingPieces(text: string) {
   }
   return pieces;
 }
+
+/** Handlers the transcript calls; read through a ref so paragraphs can be memoised. */
+interface TranscriptActions {
+  beginEdit: (segment: Segment) => void;
+  playSegment: (segment: Segment, anchor?: SearchResult['audioAnchor'], playbackKey?: string) => void;
+  moveHistory: (segment: Segment, direction: 'undo' | 'redo') => void;
+  review: (segmentId: string) => void;
+  openNote: (sliceKey: string | null) => void;
+  setNoteKind: (kind: NoteKind) => void;
+  addNote: (segmentId: string, value: Record<string, unknown>) => Promise<boolean>;
+  removeNote: (noteId: string) => void;
+}
+
+interface ParagraphProps {
+  group: Segment[]; notes: Note[]; recent: boolean; clock: number; activeSegmentId: string | null; playingKey: string | null;
+  entering: string; noteSegment: string | null; noteKind: NoteKind; configured: boolean; actions: React.MutableRefObject<TranscriptActions>;
+}
+
+const sameItems = <T,>(a: T[], b: T[]) => a.length === b.length && a.every((item, index) => item === b[index]);
+
+// During recording only the live paragraph changes; the rest of a two-hour
+// transcript is skipped instead of re-rendered on every update.
+const TranscriptParagraph = memo(function TranscriptParagraph({ group, notes, recent, clock, activeSegmentId, playingKey, entering, noteSegment, noteKind, configured, actions }: ParagraphProps) {
+  const enteringIds = entering ? new Set(entering.split('\n')) : null;
+  return <section className={`transcript-paragraph ${recent ? 'is-recent' : ''}`}><button className="paragraph-time" tabIndex={-1} aria-label={`从 ${fmtTime(clock)} 播放`} title="从这里播放" onClick={() => actions.current.playSegment(group[0])}>{fmtTime(clock)}</button><p>{group.map((segment, index) => <Fragment key={segment.id}>{index > 0 ? ' ' : null}<TranscriptBlock segment={segment} active={activeSegmentId === segment.id} playingKey={playingKey} entering={Boolean(enteringIds?.has(segment.id))} query="" onEdit={() => actions.current.beginEdit(segment)} onPlay={(anchor, playbackKey) => actions.current.playSegment(segment, anchor, playbackKey)} onUndo={() => actions.current.moveHistory(segment, 'undo')} onRedo={() => actions.current.moveHistory(segment, 'redo')} onReview={() => actions.current.review(segment.id)} composer={(sliceKey) => noteSegment !== sliceKey ? <span className="inline-insert"><button className="insert-button" aria-expanded={false} aria-label="为这句添加笔记或资料" title="添加笔记、例子、公式或图片" onClick={() => actions.current.openNote(sliceKey)}><Plus size={14} /><span>笔记</span></button></span> : <InlineNoteComposer open onOpenChange={(open) => actions.current.openNote(open ? sliceKey : null)} kind={noteKind} setKind={(kind) => actions.current.setNoteKind(kind)} configured={configured} onSubmit={(value) => actions.current.addNote(segment.id, value)} />} /></Fragment>)}</p>{notes.map((note) => <NoteBlock key={note.id} note={note} onRemove={() => actions.current.removeNote(note.id)} />)}</section>;
+}, (before, after) => sameItems(before.group, after.group) && sameItems(before.notes, after.notes) && before.recent === after.recent && before.clock === after.clock && before.activeSegmentId === after.activeSegmentId && before.playingKey === after.playingKey && before.entering === after.entering && before.noteSegment === after.noteSegment && before.noteKind === after.noteKind && before.configured === after.configured);
 
 function TranscriptBlock({ segment, active, playingKey, entering, query, composer, onEdit, onPlay, onUndo, onRedo, onReview }: {
   segment: Segment; active: boolean; playingKey: string | null; entering: boolean; query: string; composer: (sliceKey: string) => React.ReactNode; onEdit: () => void; onPlay: (anchor: NonNullable<SearchResult['audioAnchor']>, playbackKey: string) => void; onUndo: () => void; onRedo: () => void; onReview: () => void;
@@ -583,6 +611,18 @@ export default function App() {
     if (groupingRef.current.sessionId !== sessionId) groupingRef.current = { sessionId, state: { known: new Set(), paragraphStarts: new Set() } };
     return groupTranscriptSegments(selected?.segments ?? [], groupingRef.current.state);
   }, [selected?.id, selected?.segments]);
+  // Notes grouped per paragraph once, instead of filtering all notes for every sentence.
+  const notesBySegment = useMemo(() => {
+    const bySegment = new Map<string, Note[]>();
+    for (const note of selected?.notes ?? []) bySegment.set(note.segmentId, [...(bySegment.get(note.segmentId) ?? []), note]);
+    const byParagraph = new Map<string, Note[]>();
+    for (const group of transcriptGroups) {
+      const notes = group.flatMap((segment) => bySegment.get(segment.id) ?? []);
+      if (notes.length) byParagraph.set(group[0].id, notes);
+    }
+    return byParagraph;
+  }, [transcriptGroups, selected?.notes]);
+  const transcriptActions = useRef<TranscriptActions>(null!);
   const selectedIdRef = useRef<string | null>(selected?.id ?? null); selectedIdRef.current = selected?.id ?? null;
   const activeSegment = selected?.segments.find((s) => s.id === editor?.draft.segmentId) ?? null;
   const totalSamples = useMemo(() => selected?.runs.reduce((sum, run) => sum + run.samples, 0) ?? 0, [selected?.runs]);
@@ -652,6 +692,16 @@ export default function App() {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice(message); noticeTimer.current = window.setTimeout(() => { noticeTimer.current = undefined; setNotice(''); }, duration);
   }, []);
+  const lastPolishError = useRef<number | undefined>(undefined); const polishNoticeAt = useRef(0);
+  useEffect(() => {
+    // A failed automatic polish used to vanish silently; say so, at most once a minute.
+    const status = runtime.autoPolish;
+    if (status?.state !== 'error' || status.at === undefined || status.at === lastPolishError.current) return;
+    lastPolishError.current = status.at;
+    if (Date.now() - polishNoticeAt.current < 60_000) return;
+    polishNoticeAt.current = Date.now();
+    flashNotice(`DeepSeek 自动润色没有完成：${status.message ?? '未知错误'}。转写不受影响，下一句完成后会自动重试。`, 9000);
+  }, [flashNotice, runtime.autoPolish]);
   const stopPlayback = useCallback(() => { playbackRequest.current += 1; audioRef.current?.pause(); audioRef.current = null; setPlayingSegmentId(null); }, []);
   const guardProgrammaticScroll = useCallback((duration = 500) => {
     programmaticScrollRef.current = true;
@@ -682,7 +732,7 @@ export default function App() {
     finally { if (!options.background) pendingWrites.current = Math.max(0, pendingWrites.current - 1); }
   }, [clearFatal, showError]);
 
-  useEffect(() => { void update(adapter.dispatch({ type: 'snapshot' })); adapter.runtimeInfo().then(setRuntime).catch(showError); }, [showError, update]);
+  useEffect(() => { void update(adapter.dispatch({ type: 'snapshot' })); adapter.runtimeInfo().then((info) => { setRuntime(info); const lost = info.recovered ?? []; if (lost.length) flashNotice(lost.includes('整个资料库') ? '资料库文件已损坏，已单独封存原数据，现在从空白资料库开始。' : `有 ${lost.length} 项数据（${lost.slice(0, 3).join('、')}${lost.length > 3 ? ' 等' : ''}）无法读取，已单独封存，其余课程正常打开。`, 15000); }).catch(showError); }, [flashNotice, showError, update]);
   useEffect(() => {
     if (!state || defaultsApplied.current || !runtime.defaults) return;
     const merged = { ...state.settings };
@@ -1135,6 +1185,16 @@ export default function App() {
   };
 
   if (!state) return <main className="loading-screen"><div className="loading-mark">LE</div><p>正在打开课程…</p>{fatal && <p className="inline-error">{fatal}</p>}</main>;
+  transcriptActions.current = {
+    beginEdit: (segment) => void beginEdit(segment),
+    playSegment: (segment, anchor, playbackKey) => void playSegment(segment, anchor, playbackKey),
+    moveHistory: (segment, direction) => void moveSegmentHistory(segment, direction),
+    review: (segmentId) => { setReviewSegment(segmentId); setModal('review'); },
+    openNote: (sliceKey) => { setNoteSegment(sliceKey); if (sliceKey) setViewMode('reading_history'); },
+    setNoteKind,
+    addNote: async (segmentId, value) => Boolean(selected && await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId, ...value }))),
+    removeNote: (noteId) => { if (selected) void update(adapter.dispatch({ type: 'removeNote', commandId: commandId(), sessionId: selected.id, noteId })); },
+  };
   return <div className={`app-shell ${editor && !editor.exiting ? 'editor-open' : ''} ${fullEditor ? 'full-editing' : ''} ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`} style={{ '--reader-font': `${fontSize}px` } as React.CSSProperties}>
     <CourseSidebar projects={state.projects ?? []} sessions={state.sessions} selectedId={state.selectedSessionId} expanded={sidebarExpanded} revealProjectId={sidebarRevealProjectId ?? selected?.projectId ?? null} onToggle={() => setSidebarExpanded(value => !value)} onSearch={() => setSearchOpen(true)} onSelect={setSelected} onNew={() => { setNewProjectId(null); setModal('new'); }} onNewProjectCourse={(projectId) => { setNewProjectId(projectId); setModal('new'); }} onCreateProject={createProject} onRenameProject={renameProject} onMove={moveSession} onRename={(sessionId, title) => { const next = title.trim(); if (next && next !== state.sessions.find((session) => session.id === sessionId)?.title) void update(adapter.dispatch({ type: 'renameSession', commandId: commandId(), sessionId, title: next })); }} onImport={() => void importCoursePackage()} />
     <GlassSurface className="workspace">
@@ -1177,10 +1237,11 @@ export default function App() {
               {fullEditor && fullEditor.sessionId === selected.id ? <FullTranscriptEditor session={selected} values={fullEditor.values} original={fullEditor.original} status={fullEditor.status} error={fullEditor.error} onText={(segmentId, text) => setFullEditor((value) => value ? { ...value, values: { ...value.values, [segmentId]: text }, status: 'editing', error: '' } : value)} onSave={() => void saveFullDocument()} onDone={() => void saveFullDocument(true)} /> :
               <TranscriptAssist segments={selected.segments} sessionId={selected.id} configured={Boolean(runtime.deepseekKeyConfigured)} onSave={async (segmentId, text, sourceLabel) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId, kind: 'note', text, sourceLabel, imageData: null })))}>
               <div className="session-intro"><div>{selectedProject && <p className="session-crumb"><Folder size={13} strokeWidth={1.8} /><span>{selectedProject.title}</span></p>}<div className="session-title-row"><h2>{selected.title}</h2>{adapter.mode === 'demo' && <span className="demo-label">演示</span>}</div><p className="session-meta"><span>{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }).format(selected.createdAt)}</span>{totalSamples > 0 && <span className="meta-number">{fmtDuration(totalSamples)}</span>}<span className="meta-number">{wordCount.toLocaleString('zh-CN')} 字</span><span>{cloudEngine ? 'Soniox · stt-rt-v5' : selected.runs[0]?.source === 'import' ? '导入音频 · 本地转写' : selected.runs[0]?.source === 'system' ? '系统声音 · 本地转写' : '麦克风 · 本地转写'}</span><span className="saved-state"><Check size={13} /> 已保存</span></p></div><button className="full-edit-trigger" onClick={() => void beginFullEdit()} disabled={captureInProgress} title={captureInProgress ? '录音结束后编辑全文' : '在连续页面中编辑完整文稿'}><Pencil size={14} /> 编辑全文</button></div>
-              {transcriptGroups.map((group, groupIndex) => <section className={`transcript-paragraph ${groupIndex >= transcriptGroups.length - 3 ? 'is-recent' : ''}`} key={group[0].id}><button className="paragraph-time" tabIndex={-1} aria-label={`从 ${fmtTime(segmentClock(selected, group[0]))} 播放`} title="从这里播放" onClick={() => void playSegment(group[0])}>{fmtTime(segmentClock(selected, group[0]))}</button><p>{group.map((segment, index) => {
-                const entering = seenSessionRef.current === selected.id && seenSegmentsRef.current.size > 0 && !seenSegmentsRef.current.has(segment.id);
-                return <Fragment key={segment.id}>{index > 0 ? ' ' : null}<TranscriptBlock segment={segment} active={editor?.draft.segmentId === segment.id} playingKey={playingSegmentId} entering={entering} query="" onEdit={() => void beginEdit(segment)} onPlay={(anchor, playbackKey) => void playSegment(segment, anchor, playbackKey)} onUndo={() => void moveSegmentHistory(segment, 'undo')} onRedo={() => void moveSegmentHistory(segment, 'redo')} onReview={() => { setReviewSegment(segment.id); setModal('review'); }} composer={(sliceKey) => noteSegment !== sliceKey ? <span className="inline-insert"><button className="insert-button" aria-expanded={false} aria-label="为这句添加笔记或资料" title="添加笔记、例子、公式或图片" onClick={() => { setNoteSegment(sliceKey); setViewMode('reading_history'); }}><Plus size={14} /><span>笔记</span></button></span> : <InlineNoteComposer open onOpenChange={(open) => { setNoteSegment(open ? sliceKey : null); if (open) setViewMode('reading_history'); }} kind={noteKind} setKind={setNoteKind} configured={Boolean(runtime.deepseekKeyConfigured)} onSubmit={async (value) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId: segment.id, ...value })))} />} /></Fragment>;
-              })}</p>{group.flatMap((segment) => selected.notes.filter((note) => note.segmentId === segment.id)).map((note) => <NoteBlock key={note.id} note={note} onRemove={() => void update(adapter.dispatch({ type: 'removeNote', commandId: commandId(), sessionId: selected.id, noteId: note.id }))} />)}</section>)}
+              {transcriptGroups.map((group, groupIndex) => {
+                const seen = seenSessionRef.current === selected.id && seenSegmentsRef.current.size > 0;
+                const groupIds = new Set(group.map((segment) => segment.id));
+                return <TranscriptParagraph key={group[0].id} group={group} notes={notesBySegment.get(group[0].id) ?? noNotes} recent={groupIndex >= transcriptGroups.length - 3} clock={segmentClock(selected, group[0])} activeSegmentId={editor && groupIds.has(editor.draft.segmentId) ? editor.draft.segmentId : null} playingKey={playingSegmentId} entering={seen ? group.filter((segment) => !seenSegmentsRef.current.has(segment.id)).map((segment) => segment.id).join('\n') : ''} noteSegment={noteSegment && groupIds.has(noteSegment.slice(0, noteSegment.lastIndexOf(':'))) ? noteSegment : null} noteKind={noteKind} configured={Boolean(runtime.deepseekKeyConfigured)} actions={transcriptActions} />;
+              })}
               <div className="transcript-follow-anchor" ref={followAnchorRef} aria-hidden="true" />
               <div className="transcript-end"><span />{selected.recordingState === 'recording' ? <p><span className="live-caret" />等待下一段内容</p> : <p>转写结束{totalSamples > 0 && <> · {fmtDuration(totalSamples)}</>}</p>}<span /></div>
               </TranscriptAssist>}

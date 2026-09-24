@@ -42,65 +42,65 @@ pub struct Source {
     pub frames: Receiver<Frame>,
     pub errors: Receiver<String>,
     pub gaps: Receiver<(u64, u64)>,
+    pub notices: Receiver<MicrophoneNotice>,
     pub captured: Arc<AtomicU64>,
     pub rate: u32,
     pub handle: CaptureHandle,
 }
+/// How long a lost microphone may stay unavailable before the recording stops.
+const RECONNECT_WINDOW: Duration = Duration::from_secs(60);
+
 pub fn microphone() -> Result<Source, String> {
     let (tx, rx) = bounded(FRAME_QUEUE);
     let (etx, erx) = bounded(16);
     let (_gtx, grx) = bounded(1);
+    let (ntx, nrx) = bounded(16);
     let (ready, rdy) = bounded(1);
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let captured = Arc::new(AtomicU64::new(0));
-    let callback_cursor = captured.clone();
+    let cursor = captured.clone();
     let thread = thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let host = cpal::default_host();
-            let device = host
-                .default_input_device()
-                .ok_or("未找到麦克风，请连接输入设备")?;
-            let config = device
-                .default_input_config()
-                .map_err(|e| format!("无法打开麦克风：{e}"))?;
-            let rate = config.sample_rate().0;
-            let channels = config.channels() as usize;
-            let errors = etx.clone();
-            let stream = match config.sample_format() {
-                cpal::SampleFormat::F32 => build::<f32>(
-                    &device,
-                    &config.into(),
-                    channels,
-                    tx,
-                    errors,
-                    callback_cursor,
-                ),
-                cpal::SampleFormat::I16 => build::<i16>(
-                    &device,
-                    &config.into(),
-                    channels,
-                    tx,
-                    errors,
-                    callback_cursor,
-                ),
-                cpal::SampleFormat::U16 => build::<u16>(
-                    &device,
-                    &config.into(),
-                    channels,
-                    tx,
-                    errors,
-                    callback_cursor,
-                ),
-                f => return Err(format!("麦克风采样格式暂未支持：{f:?}")),
-            }?;
-            stream.play().map_err(|e| format!("麦克风启动失败：{e}"))?;
+            let lost = Arc::new(AtomicBool::new(false));
+            let (mut stream, name, rate) = open_input(&host, None, 0, &tx, &etx, &cursor, &lost)?;
             let _ = ready.send(Ok(rate));
-            while !flag.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(30));
+            let mut current = name;
+            loop {
+                while !flag.load(Ordering::Relaxed) && !lost.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(30));
+                }
+                drop(stream);
+                if flag.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                // The device went away mid-lecture: keep the timeline running and
+                // pick up whichever input the system now offers.
+                let _ = ntx.try_send(MicrophoneNotice::Lost(current.clone()));
+                let since = std::time::Instant::now();
+                let resumed = cursor.load(Ordering::Acquire);
+                loop {
+                    if flag.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    let elapsed = since.elapsed();
+                    if elapsed > RECONNECT_WINDOW {
+                        return Err(format!("麦克风“{current}”已断开，{} 秒内没有可用的输入设备", RECONNECT_WINDOW.as_secs()));
+                    }
+                    let skipped = (elapsed.as_secs_f64() * rate as f64) as u64;
+                    lost.store(false, Ordering::Relaxed);
+                    match open_input(&host, Some(rate), resumed + skipped, &tx, &etx, &cursor, &lost) {
+                        Ok((next, name, _)) => {
+                            let _ = ntx.try_send(MicrophoneNotice::Switched(name.clone()));
+                            stream = next;
+                            current = name;
+                            break;
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(500)),
+                    }
+                }
             }
-            drop(stream);
-            Ok(())
         })();
         if let Err(e) = result {
             let _ = ready.try_send(Err(e.clone()));
@@ -112,6 +112,7 @@ pub fn microphone() -> Result<Source, String> {
             frames: rx,
             errors: erx,
             gaps: grx,
+            notices: nrx,
             captured,
             rate,
             handle: CaptureHandle {
@@ -128,25 +129,157 @@ pub fn microphone() -> Result<Source, String> {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MicrophoneNotice {
+    Lost(String),
+    Switched(String),
+}
+
+/// Opens the default input, then any other input if that fails. `rate` fixes
+/// the timeline rate after a switch; a device running at another rate is
+/// resampled to it so sample offsets stay continuous.
+fn open_input(
+    host: &cpal::Host,
+    rate: Option<u32>,
+    start: u64,
+    tx: &Sender<Frame>,
+    errors: &Sender<String>,
+    cursor: &Arc<AtomicU64>,
+    lost: &Arc<AtomicBool>,
+) -> Result<(cpal::Stream, String, u32), String> {
+    let mut candidates: Vec<cpal::Device> = host.default_input_device().into_iter().collect();
+    let default_name = candidates.first().and_then(|device| device.name().ok());
+    if let Ok(devices) = host.input_devices() {
+        candidates.extend(devices.filter(|device| device.name().ok() != default_name));
+    }
+    if candidates.is_empty() {
+        return Err("未找到麦克风，请连接输入设备".into());
+    }
+    let mut first_error = None;
+    for device in candidates {
+        match open_device(&device, rate, start, tx, errors, cursor, lost) {
+            Ok(opened) => return Ok(opened),
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    Err(first_error.unwrap_or_else(|| "无法打开麦克风".into()))
+}
+
+fn open_device(
+    device: &cpal::Device,
+    rate: Option<u32>,
+    start: u64,
+    tx: &Sender<Frame>,
+    errors: &Sender<String>,
+    cursor: &Arc<AtomicU64>,
+    lost: &Arc<AtomicBool>,
+) -> Result<(cpal::Stream, String, u32), String> {
+    let name = device.name().unwrap_or_else(|_| "麦克风".into());
+    let config = device
+        .default_input_config()
+        .map_err(|e| format!("无法打开麦克风：{e}"))?;
+    let device_rate = config.sample_rate().0;
+    let timeline_rate = rate.unwrap_or(device_rate);
+    let channels = config.channels() as usize;
+    let format = config.sample_format();
+    let config: cpal::StreamConfig = config.into();
+    let link = Link {
+        tx: tx.clone(),
+        errors: errors.clone(),
+        cursor: cursor.clone(),
+        lost: lost.clone(),
+        start,
+        channels,
+        convert: RateConverter::new(device_rate, timeline_rate),
+    };
+    let stream = match format {
+        cpal::SampleFormat::F32 => build::<f32>(device, &config, link),
+        cpal::SampleFormat::I16 => build::<i16>(device, &config, link),
+        cpal::SampleFormat::U16 => build::<u16>(device, &config, link),
+        f => return Err(format!("麦克风采样格式暂未支持：{f:?}")),
+    }?;
+    stream.play().map_err(|e| format!("麦克风启动失败：{e}"))?;
+    Ok((stream, name, timeline_rate))
+}
+
+struct Link {
+    tx: Sender<Frame>,
+    errors: Sender<String>,
+    cursor: Arc<AtomicU64>,
+    lost: Arc<AtomicBool>,
+    start: u64,
+    channels: usize,
+    convert: RateConverter,
+}
+
+/// Linear-interpolating rate converter used only when a replacement device
+/// runs at a different rate from the one the recording started with. Speech is
+/// downsampled to 16 kHz afterwards, so its accuracy is ample.
+pub(crate) struct RateConverter {
+    step: f64,
+    position: f64,
+    previous: Option<f32>,
+}
+
+impl RateConverter {
+    pub(crate) fn new(from: u32, to: u32) -> Self {
+        Self {
+            step: from as f64 / to.max(1) as f64,
+            position: 0.0,
+            previous: None,
+        }
+    }
+
+    pub(crate) fn push(&mut self, input: Vec<f32>) -> Vec<f32> {
+        if (self.step - 1.0).abs() < f64::EPSILON || input.is_empty() {
+            return input;
+        }
+        // `position` counts from the previous block's last sample (index -1).
+        let mut output = Vec::with_capacity((input.len() as f64 / self.step) as usize + 2);
+        let previous = self.previous.unwrap_or(input[0]);
+        let sample = |index: isize| if index < 0 { previous } else { input[index as usize] };
+        let last = input.len() as f64 - 1.0;
+        while self.position <= last {
+            let base = self.position.floor();
+            let fraction = (self.position - base) as f32;
+            let left = sample(base as isize);
+            let right = sample((base as isize + 1).min(last as isize));
+            output.push(left + (right - left) * fraction);
+            self.position += self.step;
+        }
+        self.position -= input.len() as f64;
+        self.previous = input.last().copied();
+        output
+    }
+}
+
 fn build<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    channels: usize,
-    tx: Sender<Frame>,
-    errors: Sender<String>,
-    captured: Arc<AtomicU64>,
+    link: Link,
 ) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
-    let mut cursor = 0u64;
+    let Link {
+        tx,
+        errors,
+        cursor: captured,
+        lost,
+        start,
+        channels,
+        mut convert,
+    } = link;
+    let mut cursor = start;
     device
         .build_input_stream(
             config,
             move |data: &[T], _| {
-                let start = cursor;
-                let samples: Vec<f32> = data
+                let mono: Vec<f32> = data
                     .chunks_exact(channels)
                     .map(|f| {
                         f.iter()
@@ -155,13 +288,21 @@ where
                             / channels as f32
                     })
                     .collect();
+                let samples = convert.push(mono);
+                let start = cursor;
                 cursor += samples.len() as u64;
                 captured.store(cursor, Ordering::Release);
                 // A full queue loses this buffer only; absolute source offsets reveal the gap.
                 let _ = tx.try_send(Frame { start, samples });
             },
             move |e| {
-                let _ = errors.try_send(format!("音频设备中断：{e}"));
+                // A vanished device is recovered by reopening; anything else is
+                // reported as before.
+                if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                    lost.store(true, Ordering::Relaxed);
+                } else {
+                    let _ = errors.try_send(format!("音频设备中断：{e}"));
+                }
             },
             None,
         )
@@ -342,6 +483,7 @@ pub fn system(helper: PathBuf) -> Result<Source, String> {
             frames: rx,
             errors: erx,
             gaps: grx,
+            notices: bounded(1).1,
             captured,
             rate: 16000,
             handle: CaptureHandle {
@@ -517,5 +659,34 @@ mod tests {
             / (y.len() - 100) as f64)
             .sqrt();
         assert!(rms < 0.01, "{rms}");
+    }
+
+    #[test]
+    fn rate_converter_keeps_length_and_continuity_across_buffers() {
+        let same = RateConverter::new(48_000, 48_000).push(vec![0.1, 0.2, 0.3]);
+        assert_eq!(same, vec![0.1, 0.2, 0.3]);
+
+        // A 44.1 kHz replacement device feeding a 48 kHz timeline.
+        let mut convert = RateConverter::new(44_100, 48_000);
+        let ramp: Vec<f32> = (0..44_100).map(|i| i as f32 / 44_100.0).collect();
+        let mut out = Vec::new();
+        for chunk in ramp.chunks(441) {
+            out.extend(convert.push(chunk.to_vec()));
+        }
+        assert!((out.len() as i64 - 48_000).abs() <= 2, "{}", out.len());
+        // A linear ramp stays a ramp: no jumps at buffer boundaries.
+        let step = 44_100.0 / 48_000.0 / 44_100.0;
+        for pair in out.windows(2) {
+            assert!(((pair[1] - pair[0]) - step as f32).abs() < 1e-5);
+        }
+
+        let mut down = RateConverter::new(48_000, 16_000);
+        let mut count = 0;
+        for chunk in vec![0.5f32; 48_000].chunks(480) {
+            let part = down.push(chunk.to_vec());
+            assert!(part.iter().all(|v| (*v - 0.5).abs() < 1e-6));
+            count += part.len();
+        }
+        assert!((count as i64 - 16_000).abs() <= 1);
     }
 }
