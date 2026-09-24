@@ -15,6 +15,7 @@ import { adapter } from './bridge';
 import { shortcutLabel, canExportNativePdf, isPrimaryShortcut, PDF_PLATFORM_NOTICE } from './platform';
 import { FormulaRecognitionPanel, TranscriptAssist, TranscriptTranslateContext } from './DeepSeekTools';
 import { GlobalSearch, type SearchResult } from './GlobalSearch';
+import { Onboarding, shouldShowOnboarding } from './Onboarding';
 import { modelStoppedRunning, SettingsDialog } from './SettingsDialog';
 import { changedTranscriptSegments, persistTranscriptEdits, transcriptTextMap, TranscriptSaveError, type TranscriptTextMap } from './documentEditing';
 import { sentencePlaybackSlices, type SentencePlaybackSlice } from './sentencePlayback';
@@ -571,6 +572,13 @@ const stateSignature = (value: AppState) => `${value.selectedSessionId}|${value.
 
 export default function App() {
   const [state, setState] = useState<AppState | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const guideChecked = useRef(false);
+  useEffect(() => {
+    if (!state || guideChecked.current) return;
+    guideChecked.current = true;
+    if (shouldShowOnboarding(state.sessions.length > 0)) setGuideOpen(true);
+  }, [state]);
   const [runtime, setRuntime] = useState<RuntimeInfo>({ modelState: 'loading' });
   const [fatal, setFatal] = useState(''); const [notice, setNotice] = useState(''); const noticeTimer = useRef<number | undefined>(undefined);
   const fatalOrigin = useRef<{ source: 'action' | 'poll'; request: number } | null>(null); const dismissedPollError = useRef('');
@@ -1178,7 +1186,7 @@ export default function App() {
     await update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings: { ...state.settings, engine } }));
   };
 
-  if (!state) return <main className="loading-screen"><div className="loading-mark">LE</div><p>正在打开课程…</p>{fatal && <p className="inline-error">{fatal}</p>}</main>;
+  if (!state) return <main className="loading-screen"><div className="loading-mark">随</div><p>正在打开课程…</p>{fatal && <p className="inline-error">{fatal}</p>}</main>;
   transcriptActions.current = {
     beginEdit: (segment) => void beginEdit(segment),
     playSegment: (segment, anchor, playbackKey) => void playSegment(segment, anchor, playbackKey),
@@ -1248,7 +1256,8 @@ export default function App() {
     </GlassSurface>
     <GlobalSearch open={searchOpen} sessions={state.sessions} projects={state.projects ?? []} onClose={() => setSearchOpen(false)} onNavigate={navigateSearch} />
     {modal === 'new' && <Dialog title="新建课堂" description={newProjectId ? `课堂将收入课程分组“${state.projects.find(project => project.id === newProjectId)?.title ?? '未命名课程'}”。` : '课堂创建成功后，再在准备好时开始录音。'} onClose={() => { setModal(null); setNewProjectId(null); }}><label className="form-field"><span>课堂名称</span><input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !imeActive(e.nativeEvent)) void createCourse(); }} placeholder="例如：Lecture 1 · Markets & Choices" /></label>{dialogError && <p className="inline-error" role="alert"><CircleAlert size={14} />{dialogError}</p>}<div className="course-setup"><div><Languages size={17} /><span><strong>{state.settings.language === 'auto' ? '自动检测语言' : state.settings.language === 'zh' ? '中文' : state.settings.language === 'en' ? '英语' : state.settings.language}</strong><small>可在本地转写设置中修改</small></span></div><div><Mic size={17} /><span><strong>{source === 'microphone' ? '麦克风' : '系统声音'}</strong><small>开始录音前可以切换音频来源</small></span></div></div><footer><button className="secondary-button" onClick={() => { setModal(null); setNewProjectId(null); }}>取消</button><button className="primary-button" disabled={creatingCourse} onClick={() => void createCourse()}>{creatingCourse ? '正在创建…' : '创建课堂'}</button></footer></Dialog>}
-    {modal === 'settings' && <SettingsDialog key={selected?.id ?? 'none'} settings={state.settings} session={selected} project={selectedProject} runtime={runtime} initialEngine={pendingEngine} onClose={() => { setPendingEngine(undefined); setModal(null); }} onPick={handlePickPath} onInstall={async () => { const result = await update(adapter.dispatch({ type: 'installModel', commandId: commandId(), engine: 'qwen' }), { background: true }); if (!result) return false; return prepareModel(); }} onPrepare={prepareModel} onSave={async (settings, vocabulary) => { let failure = ''; const result = await update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings, ...(selectedProject ? { projectId: selectedProject.id, projectVocabulary: vocabulary.projectVocabulary } : {}), ...(selected ? { sessionId: selected.id, sessionVocabulary: vocabulary.sessionVocabulary } : {}) }), { onError: (message) => { failure = message; } }); if (result) { setPendingEngine(undefined); setModal(null); return true; } if (failure) throw new Error(failure); return false; }} />}
+    {modal === 'settings' && <SettingsDialog key={selected?.id ?? 'none'} onShowGuide={() => { setModal(null); setGuideOpen(true); }} settings={state.settings} session={selected} project={selectedProject} runtime={runtime} initialEngine={pendingEngine} onClose={() => { setPendingEngine(undefined); setModal(null); }} onPick={handlePickPath} onInstall={async () => { const result = await update(adapter.dispatch({ type: 'installModel', commandId: commandId(), engine: 'qwen' }), { background: true }); if (!result) return false; return prepareModel(); }} onPrepare={prepareModel} onSave={async (settings, vocabulary) => { let failure = ''; const result = await update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings, ...(selectedProject ? { projectId: selectedProject.id, projectVocabulary: vocabulary.projectVocabulary } : {}), ...(selected ? { sessionId: selected.id, sessionVocabulary: vocabulary.sessionVocabulary } : {}) }), { onError: (message) => { failure = message; } }); if (result) { setPendingEngine(undefined); setModal(null); return true; } if (failure) throw new Error(failure); return false; }} />}
+    <AnimatePresence>{guideOpen && <Onboarding onClose={() => setGuideOpen(false)} />}</AnimatePresence>
     {modal === 'review' && reviewed && <ReviewDialog segment={reviewed} error={dialogError} onClose={() => setModal(null)} onResolve={(action, text) => { if (!selected) return; void update(adapter.dispatch({ type: 'resolve', commandId: commandId(), sessionId: selected.id, segmentId: reviewed.id, expectedUserSeq: reviewed.userSeq, expectedMachineRevision: reviewed.machineRevision, action, text }), { onError: setDialogError }).then((result) => { if (result) setModal(null); }); }} />}
   </div>;
 }

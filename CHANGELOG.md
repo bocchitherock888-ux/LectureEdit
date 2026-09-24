@@ -6,7 +6,10 @@
 - Each lecture is stored on its own, so a transcript update during a long lecture rewrites only that lecture instead of the whole library (about 9× faster on a 34 MB library). The library is converted once on first open, after a copy of the old file is saved next to it (`*.before-0.1.4`); 0.1.3 and earlier cannot open the converted library
 - A lecture that cannot be read is set aside and the rest open; a damaged library file is kept aside and a fresh one opens. The app says what was set aside
 - If the microphone disconnects mid-lecture, recording switches to another input and continues; the gap is marked
-- DeepSeek auto-polish failures are shown instead of failing silently
+- A short guide (8 steps) opens the first time the app starts with an empty library. It can be skipped, and reopened from Settings
+- DeepSeek auto-polish failures show as a small mark next to the toolbar instead of a notice; hover it for the reason
+- macOS: the sentence toolbar (修订, 笔记, 翻译, 回放) did nothing when clicked, and live text could be drawn blank or over the next sentence; both fixed
+- ⌘E / Ctrl+E edits the sentence you clicked, or the newest one if none is selected
 - The window fetches only what changed instead of the whole library every 700 ms, and only the live paragraph redraws
 - Sentences split across recognition chunks are merged when polished; note cards, the sentence toolbar and live follow scrolling were refined
 - Equations and PDF export load on demand; the app starts with a smaller bundle

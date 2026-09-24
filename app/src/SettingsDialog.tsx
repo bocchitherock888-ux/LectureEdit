@@ -6,6 +6,7 @@ import type { Project, RuntimeInfo, Session, Settings } from './types';
 import './settings.css';
 
 export type SettingsDialogProps = {
+  onShowGuide?: () => void;
   settings: Settings;
   session: Session | null;
   project: Project | null;
@@ -22,7 +23,7 @@ export type SettingsDialogProps = {
 export const modelStoppedRunning = (error?: string | null) => Boolean(error && /进程已退出|连接中断/.test(error));
 const storedFields = (settings: Settings) => ({ engine: settings.engine, executable: settings.executable, modelPath: settings.modelPath, mmprojPath: settings.mmprojPath, customVocabulary: settings.customVocabulary ?? [], autoPolish: settings.autoPolish ?? false, theme: settings.theme ?? 'system' });
 
-export function SettingsDialog({ settings, session, project, runtime, initialEngine, onSave, onPick, onInstall, onPrepare, onClose }: SettingsDialogProps) {
+export function SettingsDialog({ onShowGuide, settings, session, project, runtime, initialEngine, onSave, onPick, onInstall, onPrepare, onClose }: SettingsDialogProps) {
   const [value, setValue] = useState(() => ({ ...settings, engine: initialEngine ?? settings.engine, customVocabulary: settings.customVocabulary ?? [], autoPolish: settings.autoPolish ?? false, theme: settings.theme ?? 'system' }));
   const [vocabularyScope, setVocabularyScope] = useState<'global' | 'project' | 'session'>(() => session ? 'session' : project ? 'project' : 'global');
   const [projectVocabulary, setProjectVocabulary] = useState(project?.customVocabulary ?? []);
@@ -110,7 +111,7 @@ export function SettingsDialog({ settings, session, project, runtime, initialEng
 
   return <div className="dialog-layer" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target && !saving) onClose(); }}>
     <section ref={panel} tabIndex={-1} className="dialog transcription-settings" role="dialog" aria-modal="true" aria-label="设置">
-      <header><div><h2>设置</h2><p>调整外观、课堂转写和智能服务。</p></div><button className="icon-button" aria-label="关闭" disabled={saving} onClick={onClose}><X size={18} /></button></header>
+      <header><div><h2>设置</h2><p>调整外观、课堂转写和智能服务。{onShowGuide && <> <button type="button" className="link-button settings-guide-link" disabled={saving} onClick={onShowGuide}>重新查看新手引导</button></>}</p></div><button className="icon-button" aria-label="关闭" disabled={saving} onClick={onClose}><X size={18} /></button></header>
       <div className="settings-scroll">
       <fieldset className="appearance-settings"><legend>外观</legend><div className="appearance-choice" role="radiogroup" aria-label="界面外观">
         {([['system', '跟随系统', Monitor], ['light', '浅色', Sun], ['dark', '深色', Moon]] as const).map(([theme, label, Icon]) => <label className={(value.theme ?? 'system') === theme ? 'selected' : ''} key={theme}><input type="radio" name="appearance" value={theme} checked={(value.theme ?? 'system') === theme} disabled={saving} onChange={() => setValue({ ...value, theme })} /><Icon size={16} /><span>{label}</span></label>)}
