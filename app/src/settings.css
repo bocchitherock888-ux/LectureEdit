@@ -2,14 +2,14 @@
 .engine-choice label { position: relative; display: flex; gap: 10px; align-items: center; min-height: 62px; padding: 10px 13px; border-radius: 11px; cursor: pointer; color: var(--muted); transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease; }
 .engine-choice label.selected { color: var(--ink); background: rgba(255,255,255,.92); box-shadow: 0 2px 6px rgba(37,49,54,.09), inset 0 0 0 1px rgba(255,255,255,.8); }
 .engine-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.engine-choice label:has(input:focus-visible) { outline: 3px solid rgba(53,109,115,.3); outline-offset: 1px; }
+.engine-choice label:has(input:focus-visible) { outline: 3px solid rgb(var(--accent-rgb) / .3); outline-offset: 1px; }
 .engine-choice label:has(input:disabled) { cursor: default; opacity: .6; }
 .engine-choice strong, .engine-choice small { display: block; }
 .engine-choice strong { font-size: 14px; font-weight: 650; }
 .engine-choice small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 .model-download-progress { grid-column: 1 / -1; display: grid; gap: 7px; }
-.model-download-progress progress { appearance: none; width: 100%; height: 5px; border: 0; border-radius: 3px; overflow: hidden; background: rgba(53,109,115,.1); }
-.model-download-progress progress::-webkit-progress-bar { background: rgba(53,109,115,.1); }
+.model-download-progress progress { appearance: none; width: 100%; height: 5px; border: 0; border-radius: 3px; overflow: hidden; background: rgb(var(--accent-rgb) / .1); }
+.model-download-progress progress::-webkit-progress-bar { background: rgb(var(--accent-rgb) / .1); }
 .model-download-progress progress::-webkit-progress-value { background: var(--accent); transition: width 200ms ease; }
 .model-download-progress progress::-moz-progress-bar { background: var(--accent); }
 .model-download-progress span { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -26,7 +26,7 @@
 .auto-polish-control input::after { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(26,35,54,.24); content: ""; transition: transform 180ms cubic-bezier(.22,1,.36,1); }
 .auto-polish-control input:checked { border-color: color-mix(in srgb,var(--accent) 70%,transparent); background: var(--accent); }
 .auto-polish-control input:checked::after { transform: translateX(16px); }
-.auto-polish-control input:focus-visible { outline: 3px solid rgba(50,101,214,.24); outline-offset: 2px; }
+.auto-polish-control input:focus-visible { outline: 3px solid rgb(var(--accent-rgb) / .24); outline-offset: 2px; }
 .auto-polish-control input:disabled { opacity: .6; }
 @media (prefers-reduced-motion: reduce) { .engine-choice label, .model-download-progress progress::-webkit-progress-value { transition: none; } }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .engine-choice label.selected { background: #fff; border: 1px solid var(--line); } }
@@ -41,5 +41,5 @@
 .appearance-choice label { position: relative; min-width: 0; height: 42px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: 10px; color: var(--muted); cursor: pointer; font-size: 12px; font-weight: 620; transition: background 140ms var(--ease), color 140ms var(--ease), box-shadow 140ms var(--ease); }
 .appearance-choice label.selected { color: var(--ink); background: var(--control-selected,rgba(255,255,255,.9)); box-shadow: var(--glass-specular),0 2px 7px rgba(28,47,84,.09); }
 .appearance-choice input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.appearance-choice label:has(input:focus-visible) { outline: 3px solid rgba(50,101,214,.24); outline-offset: 1px; }
+.appearance-choice label:has(input:focus-visible) { outline: 3px solid rgb(var(--accent-rgb) / .24); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) { .appearance-choice label { transition: none; } }

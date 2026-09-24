@@ -11,7 +11,7 @@
 .library-search-empty h3 { color: #515864; font-weight: 500; font-size: 16px; margin: 14px 0 8px; }
 .library-search-empty p { font-size: 13px; line-height: 1.8; margin: 0; }
 .library-search-result { display: flex; align-items: center; gap: 8px; border-radius: 12px; transition: background .12s ease; }
-.library-search-result.is-active { background: rgb(75 111 201 / 7%); }
+.library-search-result.is-active { background: rgb(var(--accent-rgb) / 7%); }
 .library-search-main-cell { flex: 1; min-width: 0; }
 .library-search-main-cell > button { width: 100%; }
 .library-search-open { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: stretch; gap: 9px; padding: 15px; text-align: left; border: 0; background: none; color: inherit; cursor: pointer; font: inherit; }
@@ -19,8 +19,8 @@
 .library-search-location > span { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; overflow-wrap: anywhere; }
 .library-search-location time { margin-left: auto; white-space: nowrap; }
 .library-search-excerpt { font-size: 15px; line-height: 1.65; overflow-wrap: anywhere; }
-.library-search-excerpt mark { color: #234c9a; background: rgb(99 143 235 / 16%); border-radius: 3px; }
-html[data-theme="dark"] .library-search-excerpt mark { color: #cddcff; background: rgb(124 161 255 / 24%); }
+.library-search-excerpt mark { color: #234c9a; background: rgb(var(--accent-rgb) / 16%); border-radius: 3px; }
+html[data-theme="dark"] .library-search-excerpt mark { color: #cddcff; background: rgb(var(--accent-rgb) / 24%); }
 .library-search-anchor { min-height: 18px; display: flex; align-items: center; gap: 5px; color: #657593; font-size: 11px; font-variant-numeric: tabular-nums; }
 .library-search-anchor > svg:last-child { width: 16px; height: 16px; flex: 0 0 auto; margin-left: auto; padding: 1px; color: #7a86a0; }
 .library-search-play { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; margin-right: 16px; border: 1px solid rgb(255 255 255 / 90%); border-radius: 50%; color: #4067b6; background: rgb(255 255 255 / 85%); box-shadow: 0 2px 8px rgb(35 50 90 / 8%); cursor: pointer; }
