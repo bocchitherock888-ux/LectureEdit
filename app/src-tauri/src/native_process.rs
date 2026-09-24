@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn executable_paths_remain_single_arguments() {
-        let process = command("C:\\Program Files\\LectureEdit\\native\\qwen\\llama-server.exe");
+        let process = command("C:\\Program Files\\随堂\\native\\qwen\\llama-server.exe");
         assert_eq!(process.get_args().count(), 0);
         assert!(process.get_program().to_string_lossy().ends_with("llama-server.exe"));
     }

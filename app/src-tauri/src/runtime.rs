@@ -2451,7 +2451,7 @@ struct Archiver {
 /// (missing permission, or on macOS a build without the audio-input entitlement).
 const MUTED_INPUT_SAMPLES: u64 = 3 * 16_000;
 const MUTED_MICROPHONE: &str = if cfg!(target_os = "macos") {
-    "麦克风没有传来任何声音。请在「系统设置 → 隐私与安全性 → 麦克风」中允许 LectureEdit，然后重新开始录音"
+    "麦克风没有传来任何声音。请在「系统设置 → 隐私与安全性 → 麦克风」中允许“随堂”，然后重新开始录音"
 } else {
     "麦克风没有传来任何声音。请在「设置 → 隐私和安全性 → 麦克风」中打开“允许桌面应用访问麦克风”，并确认麦克风没有被静音"
 };

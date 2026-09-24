@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LectureEdit",
-  "version": "0.1.3",
+  "productName": "随堂",
+  "mainBinaryName": "lectureedit",
+  "version": "0.1.4",
   "identifier": "com.lectureedit.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -12,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "LectureEdit",
+        "title": "随堂",
         "width": 1440,
         "height": 900,
         "minWidth": 960,

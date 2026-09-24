@@ -307,7 +307,7 @@ export function buildPdfContent(session: Session, locale = 'en') {
     return `<section class="pdf-transcript-group"><p class="pdf-transcript">${text}</p>${notes}</section>`;
   }).join('');
   const body = transcript || '<p class="pdf-empty">No transcript content.</p>';
-  return `<article class="pdf-document"><header class="pdf-title-page"><p class="pdf-kicker">LectureEdit · Course transcript</p><h1 class="pdf-course-title">${escapeHtml(session.title)}</h1><p class="pdf-course-date"><time datetime="${Number.isNaN(date.getTime()) ? '' : date.toISOString()}">${escapeHtml(dateText)}</time></p></header><main>${body}</main></article>`;
+  return `<article class="pdf-document"><header class="pdf-title-page"><p class="pdf-kicker">随堂 · Course transcript</p><h1 class="pdf-course-title">${escapeHtml(session.title)}</h1><p class="pdf-course-date"><time datetime="${Number.isNaN(date.getTime()) ? '' : date.toISOString()}">${escapeHtml(dateText)}</time></p></header><main>${body}</main></article>`;
 }
 
 async function settleImages(root: HTMLElement) {

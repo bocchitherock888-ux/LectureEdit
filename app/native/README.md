@@ -1,10 +1,10 @@
-# LectureEdit native system-audio helpers
+# Suitang (随堂) native system-audio helpers
 
 These helpers are standalone child processes. They begin capture only when launched, write raw 16,000 Hz mono signed 16-bit little-endian PCM to standard output, and reserve standard error for lifecycle messages. `READY` means capture started. When a bounded queue overflows, the helper inserts silence to keep sample offsets stable and emits `GAP:<start-sample>:<end-sample>`. `ERROR:<stage>:<message>` reports a failure. Send a newline on standard input for a clean stop; successful shutdown emits `STOPPED`.
 
 ## macOS
 
-`macos-system-audio/SystemAudioCapture.swift` uses ScreenCaptureKit on macOS 13 or newer. It excludes audio from the helper process and filters the parent LectureEdit process from captured applications when ScreenCaptureKit exposes it. Build on macOS with:
+`macos-system-audio/SystemAudioCapture.swift` uses ScreenCaptureKit on macOS 13 or newer. It excludes audio from the helper process and filters the parent app process from captured applications when ScreenCaptureKit exposes it. Build on macOS with:
 
 ```sh
 ./macos-system-audio/build.sh

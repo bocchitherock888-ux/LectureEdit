@@ -374,7 +374,7 @@ function CourseSidebar({ projects, sessions, selectedId, expanded, revealProject
   </div>;
   const loose = sessions.filter(session => !session.projectId);
   return <aside className="course-sidebar glass-surface" aria-label="课程与课堂">
-    <div className="app-mark"><div className="app-identity"><img src="/app-icon.png" alt="" />{expanded && <span>LectureEdit</span>}</div><button className="sidebar-toggle" aria-label={expanded ? '收起课堂栏' : '展开课堂栏'} aria-expanded={expanded} title={expanded ? '收起课堂栏' : '展开课堂栏'} onClick={onToggle}>{expanded ? <ChevronLeft className="direction-icon" size={16} strokeWidth={1.9} /> : <ChevronRight className="direction-icon" size={16} strokeWidth={1.9} />}</button></div>
+    <div className="app-mark"><div className="app-identity"><img src="/app-icon.png" alt="" />{expanded && <span>随堂</span>}</div><button className="sidebar-toggle" aria-label={expanded ? '收起课堂栏' : '展开课堂栏'} aria-expanded={expanded} title={expanded ? '收起课堂栏' : '展开课堂栏'} onClick={onToggle}>{expanded ? <ChevronLeft className="direction-icon" size={16} strokeWidth={1.9} /> : <ChevronRight className="direction-icon" size={16} strokeWidth={1.9} />}</button></div>
     <button className="sidebar-search" aria-label="搜索所有课堂" title="搜索所有课堂" onClick={onSearch}><Search size={16} />{expanded && <span>搜索所有课堂</span>}{expanded && <kbd>{shortcutLabel('K')}</kbd>}</button>
     <nav>
       {expanded && <div className="sidebar-section-heading"><span>课堂记录</span><button aria-label="新建课程分组" title="新建课程分组" onClick={() => setCreatingProject(true)}><FolderPlus size={15} /></button></div>}

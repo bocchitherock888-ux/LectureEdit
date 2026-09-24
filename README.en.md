@@ -1,8 +1,8 @@
 <div align="right"><a href="README.md">中文</a></div>
 
-<img src="app/public/app-icon.png" width="72" height="72" alt="LectureEdit icon">
+<img src="app/public/app-icon.png" width="72" height="72" alt="Suitang icon">
 
-# LectureEdit
+# Suitang 随堂
 
 [![最新版本](https://img.shields.io/github/v/release/bocchitherock888-ux/LectureEdit?label=release&color=356d73)](https://github.com/bocchitherock888-ux/LectureEdit/releases/latest)
 [![MIT License](https://img.shields.io/github/license/bocchitherock888-ux/LectureEdit?color=356d73)](LICENSE)
@@ -15,7 +15,7 @@
 
 **Record, edit the transcript and add notes as you listen.**
 
-LectureEdit is a local-first desktop application for lecture recording and transcription. Open a sentence in the left-hand editor while new transcript text continues on the right. Save your correction to put it back in place, with the associated recording and notes preserved.
+Suitang (随堂, "in class"; formerly LectureEdit) is a local-first desktop application for lecture recording and transcription. Open a sentence in the left-hand editor while new transcript text continues on the right. Save your correction to put it back in place, with the associated recording and notes preserved.
 
 When a lecturer's name is transcribed incorrectly, correct it while you remember the spelling. Add an equation or paste a slide image beside the relevant passage. Later, search for the topic, replay the recording and continue working on your notes.
 
@@ -25,18 +25,18 @@ When a lecturer's name is transcribed incorrectly, correct it while you remember
 
 ## Downloads and platforms
 
-The current version is **0.1.3 beta**.
+The current version is **0.1.4 beta**.
 
 | Platform | Status |
 |---|---|
 | macOS 13 or later, Apple Silicon | Beta builds provided as DMG and ZIP packages. |
 | Windows x64, 64-bit Intel / AMD PCs | Unsigned NSIS beta installer provided. Live recording and transcription on a real PC are still pending. |
 
-For Mac, download the appropriate package from [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases), move LectureEdit to Applications and open it. The current Mac build is ad-hoc signed and awaits Apple notarisation. After checking the download source, follow the system prompt under System Settings → Privacy & Security to allow it to open.
+For Mac, download the appropriate package from [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases), move Suitang (随堂) to Applications and open it. When upgrading from 0.1.3 or earlier, delete the old LectureEdit app; your courses are kept. The current Mac build is ad-hoc signed and awaits Apple notarisation. After checking the download source, follow the system prompt under System Settings → Privacy & Security to allow it to open.
 
-On Windows, run `LectureEdit_*_windows-x64_multi_setup.exe`. To upgrade, run the new installer over the old version: it removes the old version and installs to the same folder. Courses, recordings and the downloaded model are kept unless you tick "Delete the application data".
+On Windows, run `Suitang_*_windows-x64_multi_setup.exe`. To upgrade, run the new installer over the old version: it removes the old version and installs to the same folder, including an install from before the rename from LectureEdit. Courses, recordings and the downloaded model are kept unless you tick "Delete the application data".
 
-The local model downloads separately on first use. Packaged-app users complete setup inside LectureEdit.
+The local model downloads separately on first use. Packaged-app users complete setup inside Suitang.
 
 The application interface is currently in Simplified Chinese. The instructions below include the relevant interface labels.
 
@@ -55,7 +55,7 @@ Obtain the appropriate permission before recording, and check the input source a
 
 The sentence editor saves your draft automatically. Earlier passages have their own **取出编辑** (Open for editing) action. Audio capture and subsequent recognition continue while you edit. Saving puts the corrected text back into the transcript and resumes live following.
 
-Human corrections and the original machine transcript are stored separately. When a later recognition result conflicts with an edit, LectureEdit presents it for review. Keep the current text, accept the recognition result or merge them manually. Corrections have undo and redo history.
+Human corrections and the original machine transcript are stored separately. When a later recognition result conflicts with an edit, Suitang presents it for review. Keep the current text, accept the recognition result or merge them manually. Corrections have undo and redo history.
 
 Scrolling back preserves your reading position. Choose **回到实时** (Back to live) to follow new text again. Separate **暂停录音** and **继续录音** controls pause and resume the recording itself.
 
@@ -118,7 +118,7 @@ Choose a format from **导出** (Export):
 | Reading HTML | A browser-readable text version of the transcript and text materials. |
 | Typeset PDF | Pages for reading, sharing and printing, including equations, images and page numbers. Currently available on macOS. |
 | WAV audio | The lecture recording. |
-| `.lecture` package | The individual lecture's audio, transcript, corrections and attached materials, ready to import back into LectureEdit. |
+| `.lecture` package | The individual lecture's audio, transcript, corrections and attached materials, ready to import back into Suitang. |
 
 **Choose a `.lecture` package for a complete backup of an individual lecture.** Image attachments are preserved in the package. Markdown and HTML exports currently focus on text. Import a package to continue editing and assign it to a course group.
 
@@ -132,7 +132,7 @@ File import currently accepts WAV. The current Mac packages target Apple Silicon
 
 ## Development and feedback
 
-LectureEdit uses Tauri 2, Rust, React, TypeScript and SQLite. Local Qwen3-ASR inference runs through llama.cpp, and KaTeX renders equations.
+Suitang uses Tauri 2, Rust, React, TypeScript and SQLite. Local Qwen3-ASR inference runs through llama.cpp, and KaTeX renders equations.
 
 See [app/README.md](app/README.md) for the development environment and commands, and [WINDOWS_BUILD.md](WINDOWS_BUILD.md) for Windows x64 builds. These developer guides are currently in Chinese.
 

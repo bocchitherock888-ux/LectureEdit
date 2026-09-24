@@ -1,8 +1,8 @@
 <div align="right"><a href="README.en.md">English</a></div>
 
-<img src="app/public/app-icon.png" width="72" height="72" alt="LectureEdit 图标">
+<img src="app/public/app-icon.png" width="72" height="72" alt="随堂 图标">
 
-# LectureEdit
+# 随堂
 
 [![最新版本](https://img.shields.io/github/v/release/bocchitherock888-ux/LectureEdit?label=release&color=356d73)](https://github.com/bocchitherock888-ux/LectureEdit/releases/latest)
 [![MIT License](https://img.shields.io/github/license/bocchitherock888-ux/LectureEdit?color=356d73)](LICENSE)
@@ -15,7 +15,7 @@
 
 **边录音，边改转写，边补充课堂笔记。**
 
-LectureEdit 是一款以本地语音识别为主的课堂录音与转写桌面应用。听课时，可以把需要修正的句子取到左侧编辑，右侧继续呈现新转写。保存后，修订回到原来的位置，相关录音和笔记继续保留。
+随堂（原名 LectureEdit）是一款以本地语音识别为主的课堂录音与转写桌面应用。听课时，可以把需要修正的句子取到左侧编辑，右侧继续呈现新转写。保存后，修订回到原来的位置，相关录音和笔记继续保留。
 
 例如，老师提到的学者名字被识别错了，你可以当场改好；讲到一个公式时，可以补上 LaTeX，或贴入一张课件截图。课后再按关键词找到这一段，回放录音，并继续整理笔记。
 
@@ -25,16 +25,16 @@ LectureEdit 是一款以本地语音识别为主的课堂录音与转写桌面�
 
 ## 下载与平台
 
-当前版本为 **0.1.3 测试版**。
+当前版本为 **0.1.4 测试版**。
 
 | 平台 | 当前状态 |
 |---|---|
 | macOS 13 及以上，Apple Silicon | 提供 DMG / ZIP 测试版安装包。 |
 | Windows x64，Intel / AMD 64 位电脑 | 提供未签名 NSIS 测试安装包。真实设备录音与转写验收待完成。 |
 
-Mac 用户从 [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases) 下载对应安装包，将 LectureEdit 放入“应用程序”后打开。当前 Mac 构建采用临时签名，尚未经过 Apple 公证；确认下载来源后，可按系统提示在“系统设置 → 隐私与安全性”中允许打开。
+Mac 用户从 [Releases](https://github.com/bocchitherock888-ux/LectureEdit/releases) 下载对应安装包，将“随堂”放入“应用程序”后打开。从 0.1.3 及更早版本升级时，“应用程序”里旧的 LectureEdit 可以直接删除，课程数据不受影响。当前 Mac 构建采用临时签名，尚未经过 Apple 公证；确认下载来源后，可按系统提示在“系统设置 → 隐私与安全性”中允许打开。
 
-Windows 用户下载 `LectureEdit_*_windows-x64_multi_setup.exe` 后运行安装。已装旧版时直接运行新安装包即可：保持默认的“安装前卸载”，安装器会先卸载旧版再装到原位置。卸载确认页上不要勾选“删除应用程序数据”，课程、录音和已下载的模型就都会保留。
+Windows 用户下载 `Suitang_*_windows-x64_multi_setup.exe` 后运行安装。已装旧版时直接运行新安装包即可：保持默认的“安装前卸载”，安装器会先卸载旧版再装到原位置；如果装的是改名前的 LectureEdit，安装器也会自动把它卸掉。卸载确认页上不要勾选“删除应用程序数据”，课程、录音和已下载的模型就都会保留。
 
 本地模型首次使用时单独下载。安装包用户可以直接在应用内完成配置。
 
@@ -116,7 +116,7 @@ con yard → Cournot
 | 课程阅读 HTML | 导出可在浏览器中阅读的文字版，包含转写与文字资料。 |
 | 精排 PDF | 导出适合阅读、分享和打印的页面，包含公式、图片与页码。当前支持 macOS。 |
 | WAV 音频 | 保存课堂录音。 |
-| `.lecture` 课程包 | 保留该次课堂的录音、转写、修订和附加资料，可重新导入 LectureEdit。 |
+| `.lecture` 课程包 | 保留该次课堂的录音、转写、修订和附加资料，可重新导入“随堂”。 |
 
 **完整备份一节课堂，请选择 `.lecture` 课程包。** 图片附件随课程包保存；Markdown 和 HTML 当前以文字内容为主。课程包重新导入后，可以继续编辑并放入所需课程分组。
 
@@ -124,7 +124,7 @@ con yard → Cournot
 
 ## 测试版说明
 
-0.1.3 适合先用短课程记录体验完整流程。Windows 打包与实机运行、系统声音采集、云端服务和 120 分钟连续录音的验收待完成。实际识别速度与效果取决于电脑配置、音频质量和所选服务。
+0.1.4 适合先用短课程记录体验完整流程。Windows 打包与实机运行、系统声音采集、云端服务和 120 分钟连续录音的验收待完成。实际识别速度与效果取决于电脑配置、音频质量和所选服务。
 
 当前文件导入支持 WAV。当前 Mac 安装包面向 Apple Silicon。具体安装文件与后续验证进展以每次 Release 的说明为准。
 

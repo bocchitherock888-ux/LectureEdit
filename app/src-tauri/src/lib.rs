@@ -109,7 +109,7 @@ pub fn run() {
             pdf::export_pdf
         ])
         .build(tauri::generate_context!())
-        .expect("LectureEdit could not start")
+        .expect("随堂 could not start")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 app.state::<Arc<runtime::Runtime>>().shutdown();

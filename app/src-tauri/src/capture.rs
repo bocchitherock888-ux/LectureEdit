@@ -124,7 +124,7 @@ pub fn microphone() -> Result<Source, String> {
             stop.store(true, Ordering::SeqCst);
             Err(match r {
                 Ok(Err(e)) => e,
-                _ => "麦克风未就绪，请在系统设置中允许 LectureEdit 使用麦克风后重试".into(),
+                _ => "麦克风未就绪，请在系统设置中允许“随堂”使用麦克风后重试".into(),
             })
         }
     }
@@ -347,7 +347,7 @@ fn helper_error_for_user(error: &str) -> String {
         || error.contains("SCStreamErrorUserDeclined")
         || error.contains("ERROR:SCREEN_PERMISSION:")
     {
-        return "请在“系统设置”→“隐私与安全性”→“录屏与系统录音”中允许 LectureEdit，然后重新打开应用".into();
+        return "请在“系统设置”→“隐私与安全性”→“录屏与系统录音”中允许“随堂”，然后重新打开应用".into();
     }
     if error.starts_with("ERROR:WASAPI:") {
         return "系统声音采集启动失败，请检查播放设备后重试".into();
@@ -496,7 +496,7 @@ pub fn system(helper: PathBuf) -> Result<Source, String> {
             Err(match r {
                 Ok(Err(e)) => e,
                 _ if cfg!(windows) => "系统声音组件启动超时，请确认默认播放设备可用后重试".into(),
-                _ => "请在系统设置中允许 LectureEdit 录制系统声音后重试".into(),
+                _ => "请在系统设置中允许“随堂”录制系统声音后重试".into(),
             })
         }
     }

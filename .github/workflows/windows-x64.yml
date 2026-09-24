@@ -92,11 +92,17 @@ jobs:
         run: |
           $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
           ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Report (Join-Path $output.FullName 'QWEN-INFERENCE.json')
+      - name: Upgrade over LectureEdit 0.1.3 keeps course data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = Get-ChildItem .windows-output -Recurse -Filter 'Suitang_*_setup.exe' | Select-Object -First 1
+          ./app/scripts/windows/Test-RenameUpgrade.ps1 -Installer $installer.FullName
       - name: Upload installer, hashes and exact build report
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: LectureEdit-windows-x64-${{ inputs.cpu_profile || 'multi' }}-${{ github.run_number }}
+          name: Suitang-windows-x64-${{ inputs.cpu_profile || 'multi' }}-${{ github.run_number }}
           path: .windows-output/**
           include-hidden-files: true
           if-no-files-found: error
@@ -105,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: LectureEdit-windows-x64-diagnostics-${{ github.run_number }}
+          name: Suitang-windows-x64-diagnostics-${{ github.run_number }}
           path: |
             .windows-build/logs/**
             .windows-output/**/BUILD-INFO.json

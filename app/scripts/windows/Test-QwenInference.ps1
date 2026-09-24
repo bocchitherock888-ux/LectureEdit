@@ -25,7 +25,7 @@ foreach ($name in $files.Keys) {
 }
 
 # Non-ASCII and a space, like C:\Users\张伟\AppData — a common Chinese Windows profile path.
-$work = Join-Path ([IO.Path]::GetTempPath()) "LectureEdit 课堂测试-$PID"
+$work = Join-Path ([IO.Path]::GetTempPath()) "随堂 课堂测试-$PID"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $wav = Join-Path $work 'speech.wav'
 $phrase = 'The opportunity cost of studying economics is the time you could have spent sleeping.'

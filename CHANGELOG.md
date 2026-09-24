@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.4 — 2026-09-24
+
+- The app is now called 随堂 (Suitang). Courses, recordings, models and saved API keys stay where they were. On Windows the new installer removes the old LectureEdit install; on Mac, delete the old LectureEdit app after installing
+- Each lecture is stored on its own, so a transcript update during a long lecture rewrites only that lecture instead of the whole library (about 9× faster on a 34 MB library). The library is converted once on first open, after a copy of the old file is saved next to it (`*.before-0.1.4`); 0.1.3 and earlier cannot open the converted library
+- A lecture that cannot be read is set aside and the rest open; a damaged library file is kept aside and a fresh one opens. The app says what was set aside
+- If the microphone disconnects mid-lecture, recording switches to another input and continues; the gap is marked
+- DeepSeek auto-polish failures are shown instead of failing silently
+- The window fetches only what changed instead of the whole library every 700 ms, and only the live paragraph redraws
+- Sentences split across recognition chunks are merged when polished; note cards, the sentence toolbar and live follow scrolling were refined
+- Equations and PDF export load on demand; the app starts with a smaller bundle
+
 ## 0.1.3 — 2026-09-23
 
 - The live transcript now rolls upward smoothly instead of jumping between the middle and the bottom of the window. New paragraphs used a placeholder height until drawn, so the page grew and shrank; the newest paragraphs are now always fully laid out, and following only moves forward with a short glide

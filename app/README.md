@@ -1,4 +1,4 @@
-# LectureEdit 桌面应用
+# 随堂桌面应用
 
 此目录包含 React 19 + TypeScript 界面、Tauri 2/Rust 桌面后端、SQLite 持久化、原生音频采集、本地 Qwen3-ASR 推理与可选 Soniox stt-rt-v5 WebSocket 转写。DeepSeek V4.1 Flash 提供转写轻度整理、选文翻译和图片公式识别。Motion 负责界面动效，Floating UI 负责就地菜单的定位与焦点交互。
 

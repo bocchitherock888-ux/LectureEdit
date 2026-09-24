@@ -65,7 +65,7 @@ fn temporary_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or("LectureEdit.pdf");
+        .unwrap_or("随堂.pdf");
     path.with_file_name(format!(".{file_name}.part-{}", Uuid::new_v4()))
 }
 

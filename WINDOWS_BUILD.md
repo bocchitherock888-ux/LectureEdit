@@ -1,4 +1,4 @@
-# LectureEdit 0.1.3 · Windows x64 构建执行手册
+# 随堂 0.1.4 · Windows x64 构建执行手册
 
 日期：2026-09-20。输入为用户提供的 `LectureEdit-0.1.0-source.zip`。本目录已经包含修改后的完整源码。
 
@@ -75,13 +75,13 @@ git push -u origin windows-x64
 在 GitHub 仓库页面打开 **Actions → Windows x64 installer → 本次 commit 对应的运行**。成功后在页面底部 Artifacts 下载名称类似：
 
 ```text
-LectureEdit-windows-x64-multi-运行编号
+Suitang-windows-x64-multi-运行编号
 ```
 
 解压其中的最新构建目录，应看到：
 
 ```text
-LectureEdit_0.1.3_windows-x64_multi_setup.exe
+Suitang_0.1.4_windows-x64_multi_setup.exe
 BUILD-INFO.json
 BINARY-AUDIT.json
 native-audit.json
@@ -102,7 +102,7 @@ gh run download <同一个databaseId> --dir windows-artifacts
 
 `databaseId` 必须来自真实工具输出。Artifacts 中 diagnostics 包只含日志/报告；应将成功的 installer artifact 交给用户。
 
-构建失败时打开日志中最早失败的阶段，下载 `LectureEdit-windows-x64-diagnostics-运行编号`。该阶段通过前，保持后续阶段为 `not_run`。
+构建失败时打开日志中最早失败的阶段，下载 `Suitang-windows-x64-diagnostics-运行编号`。该阶段通过前，保持后续阶段为 `not_run`。
 
 ### A3a. 构建缓存
 
@@ -209,7 +209,7 @@ LectureEdit\app\src-tauri\target\x86_64-pc-windows-msvc\release\lectureedit.exe
 校验安装器：
 
 ```powershell
-Get-FileHash .\LectureEdit_0.1.3_windows-x64_multi_setup.exe -Algorithm SHA256
+Get-FileHash .\Suitang_0.1.4_windows-x64_multi_setup.exe -Algorithm SHA256
 ```
 
 与同目录 `SHA256SUMS.txt` 对照。哈希用于核对文件，数字签名用于验证发布者，两项应分别记录。NSIS 安装器的引导程序架构与安装进去的主程序架构可以不同；本包对实际 app、helper 和 DLL 检查 `0x8664`。

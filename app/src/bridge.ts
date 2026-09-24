@@ -15,7 +15,7 @@ async function syncState(command?: DomainCommand): Promise<AppState> {
   let next = applyDelta(held, delta);
   // Never resend the command: it has already run. Just fetch everything.
   if (!next) next = applyDelta(null, await invoke<StateDelta>('sync', { command: null, epoch: '', since: 0 }));
-  if (!next) throw new Error('无法读取课程数据，请重启 LectureEdit。');
+  if (!next) throw new Error('无法读取课程数据，请重启“随堂”。');
   held = next;
   return next.state;
 }
@@ -34,7 +34,7 @@ const nativeAdapter: LectureAdapter = {
     return syncState({ type: 'importAudio', commandId: crypto.randomUUID(), sessionId, path });
   },
   importPackage: async () => {
-    const path = await open({ multiple: false, filters: [{ name: 'LectureEdit 课程包', extensions: ['lecture', 'zip'] }] });
+    const path = await open({ multiple: false, filters: [{ name: '随堂课程包', extensions: ['lecture', 'zip'] }] });
     if (!path) return null;
     return syncState({ type: 'importPackage', commandId: crypto.randomUUID(), path });
   },
@@ -45,7 +45,7 @@ const nativeAdapter: LectureAdapter = {
       const state = await syncState({ type: 'snapshot', sessionId });
       const session = state.sessions.find((item) => item.id === sessionId);
       if (!session) throw new Error('找不到要导出的课程。');
-      const fileName = `${session.title.replace(/[\\/:*?"<>|]/g, '-').trim() || 'LectureEdit course'}.pdf`;
+      const fileName = `${session.title.replace(/[\\/:*?"<>|]/g, '-').trim() || '随堂课程'}.pdf`;
       const path = await save({ defaultPath: fileName, filters: [{ name: '精排 PDF', extensions: ['pdf'] }] });
       if (!path) return;
       const latestState = await syncState({ type: 'snapshot', sessionId });

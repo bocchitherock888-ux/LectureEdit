@@ -80,7 +80,7 @@ try {
     if ($installers.Count -ne 1) { throw "Expected exactly one fresh NSIS installer in $bundle; found $($installers.Count)." }
     $version = (Get-Content -Raw (Join-Path $script:AppDir 'package.json') | ConvertFrom-Json).version
     $suffix = $(if ($OfflineWebView2) {'_webview2-offline'} else {''})
-    $installerName = "LectureEdit_${version}_windows-x64_${CpuProfile}${suffix}_setup.exe"
+    $installerName = "Suitang_${version}_windows-x64_${CpuProfile}${suffix}_setup.exe"
     $installer = Join-Path $output $installerName
     Copy-Item -LiteralPath $installers[0].FullName -Destination $installer
     $report.installer = $installerName

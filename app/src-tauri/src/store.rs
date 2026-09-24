@@ -129,6 +129,8 @@ impl Store {
             [COMMAND_LOG_RETENTION_SECS],
         );
 
+        backup_before_row_migration(&connection, path)?;
+
         let mut recovered = Vec::new();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -566,6 +568,30 @@ fn finish_recovery(state: &mut State) {
     }
 }
 
+/// Libraries written by 0.1.3 and earlier keep everything in one snapshot row.
+/// Converting it to per-lecture rows is one-way, so a copy of the old file is
+/// kept next to it first; an existing copy is never overwritten.
+fn backup_before_row_migration(connection: &Connection, path: &Path) -> Result<(), String> {
+    let migrated: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM library_meta)", [], |row| row.get(0))
+        .map_err(db_error)?;
+    let legacy: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM state_snapshot)", [], |row| row.get(0))
+        .map_err(db_error)?;
+    if migrated || !legacy {
+        return Ok(());
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("lectureedit.sqlite");
+    let backup = path.with_file_name(format!("{name}.before-0.1.4"));
+    if backup.exists() {
+        return Ok(());
+    }
+    connection
+        .execute("VACUUM INTO ?1", [backup.to_string_lossy()])
+        .map(|_| ())
+        .map_err(|error| format!("升级前无法备份资料库，未做任何改动：{error}"))
+}
+
 fn load_rows(transaction: &Transaction, meta: &str, recovered: &mut Vec<String>) -> Result<State, String> {
     let meta = serde_json::from_str::<Value>(meta).unwrap_or_else(|_| {
         recovered.push("资料库设置".into());
@@ -756,6 +782,9 @@ mod tests {
             let rows: i64 = store.connection.query_row("SELECT COUNT(*) FROM session_rows", [], |r| r.get(0)).unwrap();
             assert_eq!((legacy, rows), (0, 2));
         }
+        let backup = db.with_file_name(format!("{}.before-0.1.4", db.file_name().unwrap().to_string_lossy()));
+        let kept: String = Connection::open(&backup).unwrap().query_row("SELECT state_json FROM state_snapshot", [], |r| r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<State>(&kept).unwrap(), original, "the pre-migration library is kept");
         let mut reopened = Store::open(&db).unwrap();
         assert_eq!(reopened.snapshot(), original);
         let sid = original.sessions[1].id.clone();
@@ -763,6 +792,9 @@ mod tests {
         drop(reopened);
         let again = Store::open(&db).unwrap().snapshot();
         assert_eq!(again.sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), original.sessions.iter().map(|s| s.id.clone()).collect::<Vec<_>>());
+        let kept: String = Connection::open(&backup).unwrap().query_row("SELECT state_json FROM state_snapshot", [], |r| r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<State>(&kept).unwrap(), original, "later opens leave the backup alone");
+        let _ = fs::remove_file(backup);
         let _ = fs::remove_file(db);
     }
 

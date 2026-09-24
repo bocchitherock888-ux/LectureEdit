@@ -88,7 +88,7 @@ private final class AudioPipeline {
 
     init() {
         let thread = Thread { [weak self] in self?.run() }
-        thread.name = "LectureEdit system audio writer"
+        thread.name = "Suitang system audio writer"
         thread.qualityOfService = .userInitiated
         thread.start()
     }

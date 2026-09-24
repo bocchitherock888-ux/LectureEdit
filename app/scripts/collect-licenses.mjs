@@ -32,5 +32,5 @@ if (process.platform === 'win32') {
 }
 add('llama.cpp','391fac16460f15233a7740550d858ac96df3419d',path.join(app,'.native-build/source/llama'),'MIT','https://github.com/ggml-org/llama.cpp');
 fs.writeFileSync(path.join(destination,'DEPENDENCIES.json'),JSON.stringify(records,null,2)+'\n');
-fs.writeFileSync(path.join(destination,'README.txt'),'LectureEdit includes the open-source components listed in DEPENDENCIES.json. Copyright and license notices are included in this directory. Model weights are downloaded separately; their license is available from the model publisher.\n');
+fs.writeFileSync(path.join(destination,'README.txt'),'Suitang (随堂) includes the open-source components listed in DEPENDENCIES.json. Copyright and license notices are included in this directory. Model weights are downloaded separately; their license is available from the model publisher.\n');
 process.stdout.write(`Collected notices for ${records.length} dependencies.\n`);
