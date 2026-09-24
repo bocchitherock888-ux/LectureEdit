@@ -117,8 +117,9 @@ button:active:not(:disabled) { transform: scale(.975); transition-duration: 60ms
 .course-setup { margin: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }.course-setup > div { display: grid; grid-template-columns: 25px minmax(0,1fr); align-items: center; gap: 8px; padding: 12px 3px; }.course-setup > div + div { border-top: 1px solid rgba(48,65,71,.07); }.course-setup svg { color: var(--muted); }.course-setup strong, .course-setup small { display: block; }.course-setup strong { font-size: 12px; }.course-setup small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 
 @keyframes menu-in { from { opacity: 0; transform: scale(.98) translateY(-3px); } } @keyframes fade-in { from { opacity: 0; } } @keyframes dialog-in { from { opacity: 0; transform: scale(.985) translateY(5px); } } @keyframes live-caret { 50% { opacity: .22; } }
-@keyframes transcript-stream-reveal { 0% { opacity: 0; filter: blur(1.5px); transform: translateY(.16em); } 60% { opacity: .85; filter: blur(0); } 100% { opacity: 1; filter: blur(0); transform: translateY(0); } }
-@keyframes transcript-cursor-trail { 0% { opacity: .72; clip-path: inset(0); } 100% { opacity: 0; clip-path: inset(0 0 0 100%); } }
+@keyframes transcript-stream-reveal { from { opacity: .35; } to { opacity: 1; } }
+@keyframes transcript-block-reveal { from { opacity: 0; } to { opacity: 1; } }
+@keyframes transcript-cursor-trail { from { opacity: .72; } to { opacity: 0; } }
 @media (max-width: 1200px) {
   .app-shell { grid-template-columns: 68px minmax(0,1fr); gap: 9px; padding: 9px; }.course-sidebar { border-radius: 19px; }.app-mark { justify-content: center; padding: 0; }.app-mark span { display: none; }.course-sidebar nav { padding-inline: 7px; }.course-item button { grid-template-columns: 1fr; justify-items: center; padding-inline: 5px; }.course-item button span { display: none; }.course-item svg { margin: 0; }.sidebar-bottom { grid-template-columns: 1fr; }.sidebar-action, .new-course { font-size: 0; }.sidebar-action svg, .new-course svg { margin: 0; }.font-control { display: none; }.compact-font-control { display: flex; }.pending-button span, .export-button span { display: none; }.source-select { width: 102px; }.transcript-column { padding-inline: 38px; }
 }
@@ -607,9 +608,9 @@ button:active:not(:disabled) { transform: scale(.97); }
 .stream-suffix { position: relative; }
 .stream-token {
   position: relative;
-  display: inline-block;
-  animation: transcript-stream-reveal .36s cubic-bezier(.22,1,.36,1) backwards;
+  animation: transcript-stream-reveal .32s cubic-bezier(.22,1,.36,1) backwards;
 }
+.transcript-block.is-entering { animation: transcript-block-reveal .42s cubic-bezier(.22,1,.36,1) backwards; }
 .stream-token.is-last::after {
   position: absolute;
   right: -1px;

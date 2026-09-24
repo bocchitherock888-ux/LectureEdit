@@ -3,7 +3,7 @@ import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, us
 import {
   ArchiveRestore, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, Cloud, Download, FileAudio, Folder, FolderPlus, HardDrive,
   FileText, Image as ImageIcon, Languages, Mic, MoreHorizontal, Pause, Pencil, Play, Plus, Quote,
-  Redo2, Save, Search, Settings as SettingsIcon, Sigma, StickyNote, Undo2, Upload, X,
+  Redo2, Save, Search, Settings as SettingsIcon, Sigma, Sparkles, StickyNote, Undo2, Upload, X,
 } from 'lucide-react';
 import {
   FloatingFocusManager, FloatingPortal, autoUpdate, flip, offset, shift, size, useClick,
@@ -259,12 +259,11 @@ function TranscriptBlock({ segment, active, playingKey, entering, query, compose
     if (localIndex < 0) return slice.text;
     return <>{slice.text.slice(0, localIndex)}<mark>{slice.text.slice(localIndex, localIndex + query.length)}</mark>{slice.text.slice(localIndex + query.length)}</>;
   };
-  return <motion.span
-    className={`transcript-block ${active ? 'is-editing' : ''} ${segment.final ? 'is-final' : 'is-live'}`}
+  // Opacity only: WebKit (the macOS app) leaves stale or blank glyphs behind when inline
+  // text carries a filter or transform and the paragraph reflows underneath it.
+  return <span
+    className={`transcript-block ${active ? 'is-editing' : ''} ${segment.final ? 'is-final' : 'is-live'} ${entering && !reduceMotion ? 'is-entering' : ''}`}
     data-segment={segment.id}
-    initial={entering && !reduceMotion ? { opacity: 0, y: 3, filter: 'blur(1.5px)' } : false}
-    animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-    transition={{ type: 'spring', bounce: 0, duration: reduceMotion ? 0 : .42 }}
   >
     {active ? <span className="segment-copy segment-ghost" aria-hidden="true">{text}</span> : slices.map((slice, index) => {
       const sliceKey = `${segment.id}:${index}`;
@@ -277,7 +276,10 @@ function TranscriptBlock({ segment, active, playingKey, entering, query, compose
           else if (event.key === ' ') { event.preventDefault(); onPlay(anchor, sliceKey); }
           else if (event.key === 'Escape') event.currentTarget.blur();
         }}>{renderSlice(slice)}</span>
-        <span className="segment-tools" role="toolbar" aria-label="这句的操作" onClick={(event) => event.stopPropagation()} onMouseUp={(event) => event.stopPropagation()}>
+        {/* The toolbar shows while the sentence has focus. WebKit (the macOS app) does not focus a
+            clicked button, so a press would blur the sentence and hide the toolbar before the click
+            lands; keeping focus where it is makes every button work there too. */}
+        <span className="segment-tools" role="toolbar" aria-label="这句的操作" onMouseDown={(event) => event.preventDefault()} onClick={(event) => event.stopPropagation()} onMouseUp={(event) => event.stopPropagation()}>
           <button onClick={() => onPlay(anchor, sliceKey)} aria-label={playing ? '暂停这一句的录音' : `回放 ${fmtTime(slice.startSample)} 开始的这一句`} title={playing ? '暂停' : '回放这句 · 空格'}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}<span>{playing ? '暂停' : '回放'}</span></button>
           <button onClick={onEdit} aria-label="修订这句" title="修订这句 · Enter"><Pencil size={13} /><span>修订</span></button>
           {composer(sliceKey)}
@@ -289,7 +291,7 @@ function TranscriptBlock({ segment, active, playingKey, entering, query, compose
         </span>
       </span>;
     })}
-  </motion.span>;
+  </span>;
 }
 
 function EditableTranscriptSegment({ segment, text, disabled, onText }: { segment: Segment; text: string; disabled: boolean; onText: (text: string) => void }) {
@@ -692,16 +694,6 @@ export default function App() {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice(message); noticeTimer.current = window.setTimeout(() => { noticeTimer.current = undefined; setNotice(''); }, duration);
   }, []);
-  const lastPolishError = useRef<number | undefined>(undefined); const polishNoticeAt = useRef(0);
-  useEffect(() => {
-    // A failed automatic polish used to vanish silently; say so, at most once a minute.
-    const status = runtime.autoPolish;
-    if (status?.state !== 'error' || status.at === undefined || status.at === lastPolishError.current) return;
-    lastPolishError.current = status.at;
-    if (Date.now() - polishNoticeAt.current < 60_000) return;
-    polishNoticeAt.current = Date.now();
-    flashNotice(`DeepSeek 自动润色没有完成：${status.message ?? '未知错误'}。转写不受影响，下一句完成后会自动重试。`, 9000);
-  }, [flashNotice, runtime.autoPolish]);
   const stopPlayback = useCallback(() => { playbackRequest.current += 1; audioRef.current?.pause(); audioRef.current = null; setPlayingSegmentId(null); }, []);
   const guardProgrammaticScroll = useCallback((duration = 500) => {
     programmaticScrollRef.current = true;
@@ -1037,7 +1029,9 @@ export default function App() {
   };
   const editCurrentSentence = () => {
     if (editorRef.current) return;
-    const current = selected?.segments.at(-1);
+    // A sentence the user has clicked (focused) wins; otherwise the newest one.
+    const focusedId = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-segment]')?.dataset.segment;
+    const current = selected?.segments.find((segment) => segment.id === focusedId) ?? selected?.segments.at(-1);
     if (!current) return;
     scrollAnimationRef.current?.stop();
     setViewMode('reading_history');
@@ -1206,6 +1200,8 @@ export default function App() {
           <div className="font-control" role="group" aria-label="转写字号">{([[15, '小号字'], [17, '中号字'], [19, '大号字']] as const).map(([size, label]) => <button key={size} className={fontSize === size ? 'active' : ''} aria-label={label} title={label} aria-pressed={fontSize === size} onClick={() => setFontSize(size)}>A</button>)}</div>
         </div>
         <div className="toolbar-group model-tools" aria-label="转写设置">
+          {/* A quiet marker instead of a notice: polishing is optional, transcription carries on, and it clears itself once DeepSeek answers again. */}
+          {runtime.autoPolish?.state === 'error' && <span className="polish-status" role="status" aria-label="DeepSeek 润色暂未完成，转写不受影响" title={`DeepSeek 润色暂未完成：${runtime.autoPolish.message ?? '未知错误'}\n转写不受影响，会自动重试。`}><Sparkles size={14} strokeWidth={1.8} /></span>}
           {pendingCount > 0 && <button className="pending-button" aria-label={`${pendingCount} 条待核对`} title={`${pendingCount} 条待核对`} onClick={() => { const first = selected?.segments.find((segment) => segment.pendingMachine); if (first) { setReviewSegment(first.id); setModal('review'); } }}><CircleAlert size={15} />{pendingCount}<span> 条待核对</span></button>}
           {cloudEngine && (cloudActiveForSelected || selected?.inferenceState === 'paused') && <button className="cloud-task-action" onClick={() => void toggleCloudProcessing()} disabled={cloudActionPending || cloudBusyElsewhere}>{cloudActionPending ? '正在更新…' : cloudActiveForSelected ? '暂停云端转写' : '继续云端转写'}</button>}
           {cloudEngine && cloudBusyElsewhere && <button className="cloud-task-action" disabled>另一课程转写中</button>}

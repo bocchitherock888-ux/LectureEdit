@@ -938,3 +938,7 @@ html[data-theme="dark"] .note-block p { margin: 6px 0 0; color: var(--ink-2); fo
   content: "\201D";
 }
 .note-block .formula-preview { margin: 8px 0 2px; }
+
+/* Auto-polish trouble: a muted glyph with a small amber dot, detail on hover. */
+.polish-status { position: relative; display: inline-grid; place-items: center; width: 28px; height: 28px; color: var(--muted, rgba(60, 60, 67, .55)); cursor: default; }
+.polish-status::after { position: absolute; top: 6px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: #d6a13b; content: ""; }
