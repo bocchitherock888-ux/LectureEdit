@@ -37,8 +37,13 @@ async fn audio_data(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-fn runtime_info(state: tauri::State<'_, Arc<runtime::Runtime>>) -> serde_json::Value {
-    state.info()
+async fn runtime_info(
+    state: tauri::State<'_, Arc<runtime::Runtime>>,
+) -> Result<serde_json::Value, String> {
+    let runtime = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.info())
+        .await
+        .map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn translate_text(

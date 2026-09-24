@@ -254,7 +254,7 @@ impl Client {
             "messages": [
                 {
                     "role": "system",
-                    "content": "You lightly clean consecutive finalized lecture transcript segments. Make the smallest possible edit. You may join adjacent source segments only when they are an obvious accidental ASR split, remove isolated speech fillers such as um, uh, er, or you know, and fix clear punctuation, capitalization, or spacing errors. Preserve every fact, claim, qualification, example, term, name, number, equation, language choice, emphasis, and tone. Preserve deliberate repetition and discourse markers. Never summarize, paraphrase, expand, translate, explain, censor, or add information. A period and capitalization at an input boundary may be ASR mistakes: for example, inputs ending with `what the aristocratic.` and beginning with `Values are all about.` should be joined as `what the aristocratic values are all about.` Return one JSON object with exactly one field named segments. segments must partition every input source index exactly once and in order. Each item must contain sourceStart (inclusive zero-based index), sourceEnd (exclusive index), and text. Use one source index per output item unless adjacent inputs clearly form one sentence. Never split one source index across outputs."
+                    "content": "You lightly clean consecutive finalized lecture transcript segments. Make the smallest possible edit. Speech recognition often cuts one spoken sentence into two sources at a pause, and may then add a false full stop and capital letter at the cut. When a source ends mid-clause (for example on an article, preposition, conjunction or an unfinished thought) and the next source completes it, join them into one item. Do not join two complete sentences. You may also remove isolated speech fillers such as um, uh, er, or you know, and fix clear punctuation, capitalization, or spacing errors. Preserve every fact, claim, qualification, example, term, name, number, equation, language choice, emphasis, and tone. Preserve deliberate repetition and discourse markers. Never summarize, paraphrase, expand, translate, explain, censor, or add information. A period and capitalization at an input boundary may be ASR mistakes: for example, inputs ending with `what the aristocratic.` and beginning with `Values are all about.` should be joined as `what the aristocratic values are all about.` Return one JSON object with exactly one field named segments. segments must partition every input source index exactly once and in order. Each item must contain sourceStart (inclusive zero-based index), sourceEnd (exclusive index), and text. Use one source index per output item unless adjacent inputs clearly form one sentence. Never split one source index across outputs."
                 },
                 {
                     "role": "user",
@@ -287,7 +287,7 @@ impl Client {
             return Err("DeepSeek 整理结果片段映射无效".into());
         }
         Ok(PolishSegmentsResult {
-            segments: coalesce_sentence_continuations(payload.segments),
+            segments: coalesce_sentence_continuations(payload.segments, &normalized),
         })
     }
 
@@ -447,25 +447,111 @@ fn trim_latex(value: &str) -> String {
     text.to_owned()
 }
 
-fn coalesce_sentence_continuations(segments: Vec<PolishedSegment>) -> Vec<PolishedSegment> {
+/// English words that never end a sentence. A segment that stops on one of
+/// them (perhaps followed by an ASR full stop) continues into the next one.
+const DANGLING_WORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "nor", "because", "than", "whose", "my", "your", "our",
+    "their", "its", "very", "although", "whereas", "whether", "into", "onto",
+];
+/// Chinese connectives that cannot end a sentence.
+const DANGLING_CJK: &[&str] = &[
+    "和", "与", "及", "把", "被", "对于", "关于", "因为", "所以", "但是", "而且", "如果", "以及",
+    "或者", "并且", "由于", "虽然", "的话", "比如", "就是说",
+];
+/// Common words that are safe to lower-case when a false sentence start is
+/// joined onto the previous segment.
+const COMMON_STARTS: &[&str] = &[
+    "a", "an", "the", "this", "that", "these", "those", "it", "is", "are", "was", "were", "we",
+    "you", "they", "he", "she", "and", "but", "or", "so", "because", "which", "who", "what",
+    "when", "where", "how", "why", "in", "on", "at", "of", "to", "for", "with", "from", "by",
+    "as", "if", "not", "no", "all", "some", "there", "here", "then", "than", "be", "been",
+];
+
+fn is_cjk(character: char) -> bool {
+    matches!(character as u32, 0x3400..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x2FA1F)
+}
+
+fn first_word(text: &str) -> &str {
+    let text = text.trim_start();
+    let end = text
+        .char_indices()
+        .find(|(_, character)| !(character.is_alphanumeric() || *character == '\''))
+        .map_or(text.len(), |(index, _)| index);
+    &text[..end]
+}
+
+/// Returns the joined text when `right` continues the sentence `left` left
+/// unfinished, judged from the boundary itself rather than the model's choice.
+fn join_continuation(left: &str, right: &str, sources: &[String]) -> Option<String> {
+    let left = left.trim_end();
+    let right = right.trim_start();
+    let mut body = left;
+    let mut soft_break = false;
+    if body.ends_with([',', '，', '、', ';', '；']) {
+        soft_break = true;
+    } else if let Some(stripped) = body.strip_suffix('.').or_else(|| body.strip_suffix('。')) {
+        if stripped.ends_with('.') {
+            return None; // An ellipsis is a deliberate pause.
+        }
+        body = stripped;
+    }
+    let body = body.trim_end();
+    let right_first = right.chars().next()?;
+    let right_lowercase = right
+        .chars()
+        .find(|character| character.is_alphabetic())
+        .is_some_and(char::is_lowercase)
+        && right_first.is_alphabetic();
+    let last_word = body
+        .rsplit(|character: char| !(character.is_alphanumeric() || character == '\''))
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    let dangling = DANGLING_WORDS.contains(&last_word.as_str())
+        || DANGLING_CJK.iter().any(|word| body.ends_with(word));
+    if !(soft_break || dangling || right_lowercase) {
+        return None;
+    }
+    let mut right = right.to_owned();
+    let word = first_word(&right).to_owned();
+    let mut letters = word.chars();
+    let titlecase = letters.next().is_some_and(char::is_uppercase)
+        && letters.clone().all(|character| !character.is_uppercase())
+        && word != "I"
+        && !word.starts_with("I'");
+    if titlecase {
+        let lower = word.to_lowercase();
+        let used_lowercase = sources.iter().any(|source| {
+            source
+                .split(|character: char| !(character.is_alphanumeric() || character == '\''))
+                .any(|candidate| candidate == lower)
+        });
+        if COMMON_STARTS.contains(&lower.as_str()) || used_lowercase {
+            right.replace_range(..word.len(), &lower);
+        }
+    }
+    let wide = |character: char| {
+        is_cjk(character) || matches!(character as u32, 0x3000..=0x303F | 0xFF00..=0xFFEF)
+    };
+    let joiner = if body.chars().next_back().is_some_and(wide) && wide(right_first) {
+        ""
+    } else {
+        " "
+    };
+    Some(format!("{body}{joiner}{right}"))
+}
+
+fn coalesce_sentence_continuations(
+    segments: Vec<PolishedSegment>,
+    sources: &[String],
+) -> Vec<PolishedSegment> {
     let mut output: Vec<PolishedSegment> = Vec::with_capacity(segments.len());
     for mut segment in segments {
         segment.text = segment.text.trim().to_owned();
-        let continuation = segment
-            .text
-            .chars()
-            .find(|character| character.is_alphabetic())
-            .is_some_and(char::is_lowercase);
-        if continuation {
-            if let Some(previous) = output.last_mut() {
-                if previous.source_end == segment.source_start {
-                    let mut left = previous.text.trim_end().to_owned();
-                    if left.chars().next_back().is_some_and(|character| {
-                        matches!(character, '.' | '!' | '?' | '。' | '！' | '？')
-                    }) {
-                        left.pop();
-                    }
-                    previous.text = format!("{} {}", left.trim_end(), segment.text.trim_start());
+        if let Some(previous) = output.last_mut() {
+            if previous.source_end == segment.source_start {
+                if let Some(joined) = join_continuation(&previous.text, &segment.text, sources) {
+                    previous.text = joined;
                     previous.source_end = segment.source_end;
                     continue;
                 }
@@ -652,7 +738,8 @@ mod tests {
         assert_eq!(result.segments[0].source_end, 2);
         let request = String::from_utf8(request.recv().unwrap()).unwrap();
         assert!(request.contains("sourceStart"));
-        assert!(request.contains("obvious accidental ASR split"));
+        assert!(request.contains("join them into one item"));
+        assert!(request.contains("Do not join two complete sentences"));
     }
 
     #[test]
@@ -742,6 +829,52 @@ mod tests {
                 source_end: 2,
                 text: "That is what the aristocratic values are all about.".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn boundary_join_repairs_dangling_words_and_leaves_complete_sentences() {
+        let sources = vec![
+            "the values we hold".to_owned(),
+            "we look at the.".to_owned(),
+            "Values are all about.".to_owned(),
+        ];
+        assert_eq!(
+            join_continuation("We look at the.", "Values are all about.", &sources).as_deref(),
+            Some("We look at the values are all about.")
+        );
+        // Unknown capitalised words may be names, so their case is kept.
+        assert_eq!(
+            join_continuation("He flew to the.", "Paris office.", &[]).as_deref(),
+            Some("He flew to the Paris office.")
+        );
+        assert_eq!(
+            join_continuation("The demand and.", "The supply matter.", &[]).as_deref(),
+            Some("The demand and the supply matter.")
+        );
+        assert_eq!(
+            join_continuation("Prices rose,", "Which surprised everyone.", &[]).as_deref(),
+            Some("Prices rose, which surprised everyone.")
+        );
+        assert_eq!(
+            join_continuation("我们来看因为。", "需求增加了。", &[]).as_deref(),
+            Some("我们来看因为需求增加了。")
+        );
+        assert_eq!(
+            join_continuation("这是第一点，", "然后是第二点。", &[]).as_deref(),
+            Some("这是第一点，然后是第二点。")
+        );
+        assert_eq!(
+            join_continuation("We met the.", "I think so.", &[]).as_deref(),
+            Some("We met the I think so.")
+        );
+        assert_eq!(join_continuation("Prices rose.", "Demand fell.", &[]), None);
+        assert_eq!(join_continuation("这是我的。", "下一句。", &[]), None);
+        assert_eq!(join_continuation("Wait...", "and then.", &[]), None);
+        assert_eq!(join_continuation("Is it the?", "Answer.", &[]), None);
+        assert_eq!(
+            join_continuation("It went up.", "then it fell.", &[]).as_deref(),
+            Some("It went up then it fell.")
         );
     }
 

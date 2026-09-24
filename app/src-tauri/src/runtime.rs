@@ -160,7 +160,7 @@ fn auto_polish_paragraph_bounds(
     let adjacent = |left: &crate::domain::Segment, right: &crate::domain::Segment| {
         left.run_id == right.run_id
             && right.start_sample >= left.start_sample
-            && right.start_sample <= left.end_sample.saturating_add(32_000)
+            && right.start_sample <= left.end_sample.saturating_add(AUTO_POLISH_MAX_GAP_SAMPLES)
     };
     let mut block_start = trigger;
     let mut block_end = trigger + 1;
@@ -202,6 +202,50 @@ fn auto_polish_paragraph_bounds(
         start = if length > 2 { end - 2 } else { end };
     }
     (trigger, trigger + 1)
+}
+
+/// Speakers often pause mid-sentence for longer than a VAD endpoint; segments
+/// separated by up to five seconds may still be one sentence, so they are
+/// polished together and the model decides whether to join them.
+const AUTO_POLISH_MAX_GAP_SAMPLES: u64 = 80_000;
+
+/// The newest final segment of a run that is still recording (or still has a
+/// live hypothesis after it) may be the first half of a sentence. Polishing it
+/// alone would add a full stop that later hides the continuation, so it waits
+/// until its successor is final or the run closes.
+fn auto_polish_tail_open(session: &crate::domain::Session, end: usize) -> bool {
+    let Some(last) = end.checked_sub(1).and_then(|index| session.segments.get(index)) else {
+        return false;
+    };
+    let mut later = session.segments[end..]
+        .iter()
+        .filter(|segment| segment.run_id == last.run_id);
+    let mut pending = false;
+    for segment in &mut later {
+        if segment.final_ {
+            return false;
+        }
+        pending = true;
+    }
+    pending
+        || session
+            .runs
+            .iter()
+            .any(|run| run.id == last.run_id && run.state == "recording")
+}
+
+fn auto_polish_run_tail(state: &State, sid: &str, rid: &str) -> Option<String> {
+    state
+        .sessions
+        .iter()
+        .find(|session| session.id == sid)?
+        .segments
+        .iter()
+        .rev()
+        .find(|segment| {
+            segment.run_id == rid && segment.final_ && !segment.display_text.trim().is_empty()
+        })
+        .map(|segment| segment.id.clone())
 }
 
 fn auto_polish_backfill_trigger(state: &State) -> Option<(String, String)> {
@@ -420,11 +464,14 @@ impl Runtime {
         serde_json::to_value(self.snapshot()?).map_err(|e| e.to_string())
     }
     fn session(&self, sid: &str) -> Result<Value, String> {
-        self.value()?["sessions"]
-            .as_array()
-            .and_then(|a| a.iter().find(|s| s["id"] == sid))
-            .cloned()
-            .ok_or("课程不存在".into())
+        let store = self.store.lock().map_err(|_| "数据写入器不可用")?;
+        let session = store
+            .state()
+            .sessions
+            .iter()
+            .find(|session| session.id == sid)
+            .ok_or("课程不存在")?;
+        serde_json::to_value(session).map_err(|e| e.to_string())
     }
     fn update<F>(&self, sid: &str, f: F) -> Result<State, String>
     where
@@ -931,7 +978,12 @@ impl Runtime {
         }
     }
     pub fn info(&self) -> Value {
-        let settings = self.value().unwrap_or_default()["settings"].clone();
+        let settings = self
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| serde_json::to_value(&store.state().settings).ok())
+            .unwrap_or_default();
         let defaults = crate::models::defaults(&self.root, &self.resources);
         let local_model_installed = match settings["engine"].as_str() {
             Some("qwen" | "qwen3-asr") => self.local_qwen_installed(&settings),
@@ -1108,6 +1160,10 @@ impl Runtime {
                 return;
             };
             let (start, end) = auto_polish_paragraph_bounds(session, trigger);
+            let tail_open = auto_polish_tail_open(session, end);
+            if tail_open && end - start < 2 {
+                return;
+            }
             let candidates = &session.segments[start..end];
             let schedule_key = candidates
                 .iter()
@@ -1142,7 +1198,17 @@ impl Runtime {
             if credential.lock().map_or(true, |value| value.epoch != epoch) {
                 return;
             }
-            let sources: Vec<Value> = candidates
+            let mut outputs = result.segments;
+            let mut source_count = candidates.len();
+            if tail_open {
+                // Keep the group that contains the unfinished tail untouched;
+                // it is polished together with its continuation later.
+                source_count = outputs.pop().map_or(0, |group| group.source_start);
+                if source_count == 0 {
+                    return;
+                }
+            }
+            let sources: Vec<Value> = candidates[..source_count]
                 .iter()
                 .map(|segment| {
                     json!({
@@ -1168,7 +1234,7 @@ impl Runtime {
                 "commandId":uid(),
                 "sessionId":session_id,
                 "sources":sources,
-                "segments":result.segments
+                "segments":outputs
             }));
             drop(credential_guard);
         });
@@ -1681,8 +1747,16 @@ impl Runtime {
                 s["error"] = json!(e);
             }
             Ok(())
-        })
-        .map(drop)
+        })?;
+        // The last sentence was held back while the run was open.
+        if let Some(segment_id) = self
+            .snapshot()
+            .ok()
+            .and_then(|state| auto_polish_run_tail(&state, sid, rid))
+        {
+            self.schedule_auto_polish(sid, &segment_id);
+        }
+        Ok(())
     }
     fn import_audio(self: &Arc<Self>, sid: &str, path: &Path) -> Result<(), String> {
         if self.capture.lock().unwrap().is_some() {
@@ -4808,7 +4882,7 @@ mod tests {
             let start = if index < 8 {
                 index * 16_000
             } else {
-                index * 16_000 + 40_000
+                index * 16_000 + 90_000
             };
             crate::domain::apply_command(
                 &mut state,
@@ -4819,6 +4893,55 @@ mod tests {
         let session = &state.sessions[0];
         assert_eq!(auto_polish_paragraph_bounds(session, 3), (0, 8));
         assert_eq!(auto_polish_paragraph_bounds(session, 8), (8, 10));
+    }
+
+    #[test]
+    fn auto_polish_holds_the_newest_sentence_until_it_is_settled() {
+        let mut state = State::default();
+        crate::domain::apply_command(
+            &mut state,
+            &json!({"type":"createSession","title":"tail","mode":"live"}),
+        )
+        .unwrap();
+        let sid = state.selected_session_id.clone().unwrap();
+        // A three-second pause inside one sentence still counts as adjacent.
+        for (index, start) in [0u64, 64_000].into_iter().enumerate() {
+            crate::domain::apply_command(
+                &mut state,
+                &json!({"type":"machine","sessionId":sid,"segmentId":format!("t{index}"),"runId":"r1","startSample":start,"endSample":start + 16_000,"text":format!("part {index}"),"revision":1,"workerEpoch":0,"final":true}),
+            )
+            .unwrap();
+        }
+        let session = &mut state.sessions[0];
+        session.runs.push(crate::domain::Run {
+            id: "r1".into(),
+            source: "microphone".into(),
+            engine: "qwen".into(),
+            started_at: 0,
+            ended_at: None,
+            samples: 96_000,
+            offset_ms: 0,
+            state: "recording".into(),
+        });
+        assert_eq!(auto_polish_paragraph_bounds(session, 1), (0, 2));
+        assert!(auto_polish_tail_open(session, 2));
+        assert!(!auto_polish_tail_open(session, 1));
+
+        session.runs[0].state = "closed".into();
+        assert!(!auto_polish_tail_open(session, 2));
+        let snapshot = state.clone();
+        assert_eq!(
+            auto_polish_run_tail(&snapshot, &sid, "r1"),
+            Some("t1".into())
+        );
+
+        // A live hypothesis after the tail keeps it open even after the run closes.
+        crate::domain::apply_command(
+            &mut state,
+            &json!({"type":"machine","sessionId":sid,"segmentId":"live","runId":"r1","startSample":80_000,"endSample":90_000,"text":"still","revision":1,"workerEpoch":0,"final":false}),
+        )
+        .unwrap();
+        assert!(auto_polish_tail_open(&state.sessions[0], 2));
     }
 
     #[test]

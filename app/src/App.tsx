@@ -1,4 +1,5 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { imeActive } from './ime';
+import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArchiveRestore, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, Cloud, Download, FileAudio, Folder, FolderPlus, HardDrive,
   FileText, Image as ImageIcon, Languages, Mic, MoreHorizontal, Pause, Pencil, Play, Plus, Quote,
@@ -14,7 +15,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { adapter } from './bridge';
 import { shortcutLabel, canExportNativePdf, isPrimaryShortcut, PDF_PLATFORM_NOTICE } from './platform';
-import { FormulaRecognitionPanel, TranscriptAssist } from './DeepSeekTools';
+import { FormulaRecognitionPanel, TranscriptAssist, TranscriptTranslateContext } from './DeepSeekTools';
 import { GlobalSearch, type SearchResult } from './GlobalSearch';
 import { modelStoppedRunning, SettingsDialog } from './SettingsDialog';
 import { changedTranscriptSegments, persistTranscriptEdits, transcriptTextMap, TranscriptSaveError, type TranscriptTextMap } from './documentEditing';
@@ -208,6 +209,7 @@ function TranscriptBlock({ segment, active, playingKey, entering, query, compose
 }) {
   const text = segment.displayText;
   const reduceMotion = useReducedMotion();
+  const translate = useContext(TranscriptTranslateContext);
   const previousState = useRef({ text, machineRevision: segment.machineRevision });
   const previous = previousState.current;
   const machineGrew = segment.machineRevision > previous.machineRevision && text.length > previous.text.length && text.startsWith(previous.text);
@@ -241,14 +243,21 @@ function TranscriptBlock({ segment, active, playingKey, entering, query, compose
       const playing = playingKey === sliceKey;
       const anchor = { runId: segment.runId, startSample: slice.startSample, endSample: slice.endSample };
       return <span className="sentence-unit" key={sliceKey}>
-        <span className={`segment-copy ${playing ? 'is-playing' : ''}`} role="button" tabIndex={0} aria-label={`选择并操作这句：${slice.text.trim()}`} title="选择这句，显示回放与修订操作" onClick={(event) => { if (window.getSelection()?.isCollapsed !== false) event.currentTarget.focus(); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.currentTarget.focus(); } }}>{renderSlice(slice)}</span>
-        <span className="segment-tools" onClick={(event) => event.stopPropagation()}>
-          <button onClick={() => onPlay(anchor, sliceKey)} aria-label={playing ? '暂停这一句的录音' : `回放 ${fmtTime(slice.startSample)} 开始的这一句`}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />} {playing ? '暂停' : '回放这句'}</button>
-          <button onClick={onEdit} title="打开这句所在转写段"><Pencil size={13} /> 取出编辑</button>
-          {segment.history.length > 0 && segment.historyIndex >= 0 && <button onClick={onUndo} aria-label="撤销此句最近一次修订" title="撤销此句最近一次修订"><Undo2 size={13} /> 撤销修订</button>}
-          {segment.history.length > 0 && segment.historyIndex < segment.history.length - 1 && <button onClick={onRedo} aria-label="重做此句修订" title="重做此句修订"><Redo2 size={13} /> 重做修订</button>}
+        <span className={`segment-copy ${playing ? 'is-playing' : ''}`} role="button" tabIndex={0} aria-label={`选择这句：${slice.text.trim()}。Enter 修订，空格回放`} onClick={(event) => { if (window.getSelection()?.isCollapsed !== false) event.currentTarget.focus(); }} onKeyDown={(event) => {
+          if (imeActive(event.nativeEvent) || event.target !== event.currentTarget) return;
+          if (event.key === 'Enter') { event.preventDefault(); onEdit(); }
+          else if (event.key === ' ') { event.preventDefault(); onPlay(anchor, sliceKey); }
+          else if (event.key === 'Escape') event.currentTarget.blur();
+        }}>{renderSlice(slice)}</span>
+        <span className="segment-tools" role="toolbar" aria-label="这句的操作" onClick={(event) => event.stopPropagation()} onMouseUp={(event) => event.stopPropagation()}>
+          <button onClick={() => onPlay(anchor, sliceKey)} aria-label={playing ? '暂停这一句的录音' : `回放 ${fmtTime(slice.startSample)} 开始的这一句`} title={playing ? '暂停' : '回放这句 · 空格'}>{playing ? <Pause size={13} fill="currentColor" /> : <Play size={13} fill="currentColor" />}<span>{playing ? '暂停' : '回放'}</span></button>
+          <button onClick={onEdit} aria-label="修订这句" title="修订这句 · Enter"><Pencil size={13} /><span>修订</span></button>
           {composer(sliceKey)}
-          {segment.pendingMachine && <button onClick={onReview}><CircleAlert size={13} /> 核对更新</button>}
+          {translate && <button onClick={(event) => translate(segment.id, slice.text, event.currentTarget.getBoundingClientRect())} aria-label="翻译这句" title="用 DeepSeek 翻译这句"><Languages size={13} /><span>翻译</span></button>}
+          {segment.history.length > 0 && (segment.historyIndex >= 0 || segment.historyIndex < segment.history.length - 1) && <i className="tool-divider" aria-hidden="true" />}
+          {segment.history.length > 0 && segment.historyIndex >= 0 && <button className="tool-icon" onClick={onUndo} aria-label="撤销此句最近一次修订" title="撤销此句最近一次修订"><Undo2 size={13} /></button>}
+          {segment.history.length > 0 && segment.historyIndex < segment.history.length - 1 && <button className="tool-icon" onClick={onRedo} aria-label="重做此句修订" title="重做此句修订"><Redo2 size={13} /></button>}
+          {segment.pendingMachine && <button className="tool-review" onClick={onReview}><CircleAlert size={13} /><span>核对更新</span></button>}
         </span>
       </span>;
     })}
@@ -328,7 +337,7 @@ function CourseSidebar({ projects, sessions, selectedId, expanded, revealProject
     setProjectTitle(''); setCreatingProject(false);
   };
   const row = (session: Session) => <div className={`course-item ${session.id === selectedId ? 'selected' : ''}`} key={session.id}>
-    {renaming === session.id && expanded ? <input autoFocus defaultValue={session.title} aria-label="课堂名称" onBlur={(event) => { onRename(session.id, event.target.value); setRenaming(null); }} onKeyDown={(event) => { if (event.nativeEvent.isComposing) return; if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') setRenaming(null); }} /> : <>
+    {renaming === session.id && expanded ? <input autoFocus defaultValue={session.title} aria-label="课堂名称" onBlur={(event) => { onRename(session.id, event.target.value); setRenaming(null); }} onKeyDown={(event) => { if (imeActive(event.nativeEvent)) return; if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') setRenaming(null); }} /> : <>
       <button className="course-select" aria-label={session.title} onClick={() => onSelect(session.id)} onDoubleClick={() => { if (expanded) setRenaming(session.id); }} title={session.title}>
         <BookOpen size={16} />{expanded && <span><strong>{session.title}</strong><small>{fmtDate(session.createdAt)}</small></span>}
       </button>
@@ -341,14 +350,14 @@ function CourseSidebar({ projects, sessions, selectedId, expanded, revealProject
     <button className="sidebar-search" aria-label="搜索所有课堂" title="搜索所有课堂" onClick={onSearch}><Search size={16} />{expanded && <span>搜索所有课堂</span>}{expanded && <kbd>{shortcutLabel('K')}</kbd>}</button>
     <nav>
       {expanded && <div className="sidebar-section-heading"><span>课堂记录</span><button aria-label="新建课程分组" title="新建课程分组" onClick={() => setCreatingProject(true)}><FolderPlus size={15} /></button></div>}
-      {creatingProject && expanded && <div className="project-create"><Folder size={15} /><input autoFocus value={projectTitle} aria-label="课程分组名称" placeholder="例如：Economics" onChange={event => setProjectTitle(event.target.value)} onBlur={(event) => { if (!projectTitle.trim() && !event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) setCreatingProject(false); }} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) void submitProject(); if (event.key === 'Escape') { setProjectTitle(''); setCreatingProject(false); } }} /><button aria-label="创建课程分组" title="创建课程分组" disabled={!projectTitle.trim() || submittingProject} onClick={() => void submitProject()}><Check size={14} /></button></div>}
+      {creatingProject && expanded && <div className="project-create"><Folder size={15} /><input autoFocus value={projectTitle} aria-label="课程分组名称" placeholder="例如：Economics" onChange={event => setProjectTitle(event.target.value)} onBlur={(event) => { if (!projectTitle.trim() && !event.currentTarget.parentElement?.contains(event.relatedTarget as Node | null)) setCreatingProject(false); }} onKeyDown={event => { if (event.key === 'Enter' && !imeActive(event.nativeEvent)) void submitProject(); if (event.key === 'Escape' && !imeActive(event.nativeEvent)) { setProjectTitle(''); setCreatingProject(false); } }} /><button aria-label="创建课程分组" title="创建课程分组" disabled={!projectTitle.trim() || submittingProject} onClick={() => void submitProject()}><Check size={14} /></button></div>}
       {loose.map(row)}
       {projects.map(project => {
         const children = sessions.filter(session => session.projectId === project.id);
         const open = openProjects.has(project.id);
         if (!expanded) return children.map(row);
         return <section className="project-group" key={project.id}>
-          <div className="project-heading">{renamingProject === project.id ? <input autoFocus defaultValue={project.title} aria-label="课程分组名称" onBlur={event => { onRenameProject(project.id, event.target.value); setRenamingProject(null); }} onKeyDown={event => { if (event.nativeEvent.isComposing) return; if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') setRenamingProject(null); }} /> : <button className="project-toggle" title={project.title} onClick={() => toggleProject(project.id)} onDoubleClick={() => setRenamingProject(project.id)} aria-expanded={open}><ChevronRight className={`disclosure-chevron ${open ? 'is-open' : ''}`} size={14} strokeWidth={1.9} /><Folder size={15} /><span>{project.title}</span><small>{children.length}</small></button>}{renamingProject !== project.id && <button className="project-rename" aria-label={`重命名 ${project.title}`} title="重命名课程分组" onClick={() => setRenamingProject(project.id)}><Pencil size={13} /></button>}<button className="project-add" aria-label={`在 ${project.title} 新建课堂`} title="在课程分组中新建课堂" onClick={() => { if (!open) toggleProject(project.id); onNewProjectCourse(project.id); }}><Plus size={14} /></button></div>
+          <div className="project-heading">{renamingProject === project.id ? <input autoFocus defaultValue={project.title} aria-label="课程分组名称" onBlur={event => { onRenameProject(project.id, event.target.value); setRenamingProject(null); }} onKeyDown={event => { if (imeActive(event.nativeEvent)) return; if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') setRenamingProject(null); }} /> : <button className="project-toggle" title={project.title} onClick={() => toggleProject(project.id)} onDoubleClick={() => setRenamingProject(project.id)} aria-expanded={open}><ChevronRight className={`disclosure-chevron ${open ? 'is-open' : ''}`} size={14} strokeWidth={1.9} /><Folder size={15} /><span>{project.title}</span><small>{children.length}</small></button>}{renamingProject !== project.id && <button className="project-rename" aria-label={`重命名 ${project.title}`} title="重命名课程分组" onClick={() => setRenamingProject(project.id)}><Pencil size={13} /></button>}<button className="project-add" aria-label={`在 ${project.title} 新建课堂`} title="在课程分组中新建课堂" onClick={() => { if (!open) toggleProject(project.id); onNewProjectCourse(project.id); }}><Plus size={14} /></button></div>
           {open && <div className="project-courses">{children.length ? children.map(row) : <button className="empty-project" onClick={() => onNewProjectCourse(project.id)}>新建第一节课</button>}</div>}
         </section>;
       })}
@@ -403,8 +412,8 @@ function CorrectionPanel({ draft, segment, text, status, commitError, originRect
     <div className={`editor-card ${status === 'error' || status === 'commitError' ? 'has-error' : ''}`}>
       <label className="sr-only" htmlFor="correction-text">修订内容</label>
       <textarea ref={textRef} id="correction-text" rows={1} autoFocus spellCheck={false} value={text} style={{ opacity: flightDone && !exiting ? 1 : 0 }} onChange={(e) => onText(e.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(e) => {
-        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !composing.current && !e.nativeEvent.isComposing) { e.preventDefault(); onCommit(); }
-        if (e.key === 'Escape' && !composing.current) onClose();
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !composing.current && !imeActive(e.nativeEvent)) { e.preventDefault(); onCommit(); }
+        if (e.key === 'Escape' && !composing.current && !imeActive(e.nativeEvent)) onClose();
       }} />
       <div className="editor-card-bar">
         <IconButton label="撤销" onClick={onUndo}><Undo2 size={15} /></IconButton><IconButton label="重做" onClick={onRedo}><Redo2 size={15} /></IconButton>
@@ -416,7 +425,7 @@ function CorrectionPanel({ draft, segment, text, status, commitError, originRect
 }
 
 function Dialog({ title, description, children, onClose, wide = false }: { title: string; description?: string; children: React.ReactNode; onClose: () => void; wide?: boolean }) {
-  useEffect(() => { const close = (event: KeyboardEvent) => { if (event.key === 'Escape' && !event.isComposing) onClose(); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [onClose]);
+  useEffect(() => { const close = (event: KeyboardEvent) => { if (event.key === 'Escape' && !imeActive(event)) onClose(); }; window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [onClose]);
   return <div className="dialog-layer" role="presentation" onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}><section className={`dialog ${wide ? 'dialog-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
     <header><div><h2>{title}</h2>{description && <p>{description}</p>}</div><IconButton label="关闭" onClick={onClose}><X size={18} /></IconButton></header>{children}
   </section></div>;
@@ -481,7 +490,7 @@ function InlineNoteComposer({ open, onOpenChange, kind, setKind, configured, onS
   };
 
   return <span className="inline-insert">
-    <button ref={refs.setReference} className="insert-button" {...getReferenceProps()} aria-expanded={open}><Plus size={15} /> 添加资料</button>
+    <button ref={refs.setReference} className="insert-button" {...getReferenceProps()} aria-expanded={open} aria-label="为这句添加笔记或资料" title="添加笔记、例子、公式或图片"><Plus size={14} /><span>笔记</span></button>
     <AnimatePresence>
       {open && <FloatingPortal>
         <FloatingFocusManager context={context} modal={false} initialFocus={fieldRef} returnFocus>
@@ -496,7 +505,7 @@ function InlineNoteComposer({ open, onOpenChange, kind, setKind, configured, onS
             transition={{ type: 'spring', bounce: 0, duration: reduceMotion ? .12 : .32 }}
             onSubmit={(event) => { event.preventDefault(); if (!composing.current && !(event.nativeEvent as Event & { isComposing?: boolean }).isComposing) void submit(); }}
             onPaste={(event) => { if (savingRef.current) { event.preventDefault(); return; } const file = Array.from(event.clipboardData.files).find((item) => item.type.startsWith('image/')); if (file) { event.preventDefault(); setKind('image'); readImage(file); } }}
-            onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !composing.current && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }}
+            onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !composing.current && !imeActive(event.nativeEvent)) { event.preventDefault(); void submit(); } }}
           >
             <div className="composer-heading"><strong>添加课堂资料</strong><button type="button" className="icon-button" aria-label="关闭资料编辑" disabled={saving} onClick={() => guardedOpenChange(false)}><X size={17} /></button></div>
             <div className="kind-picker" aria-label="资料类型">{kinds.map(([value, label, Icon]) => <button type="button" key={value} disabled={saving} className={kind === value ? 'selected' : ''} aria-pressed={kind === value} onClick={() => { setKind(value); if (value !== 'image') requestAnimationFrame(() => fieldRef.current?.focus()); }}><Icon size={16} />{label}</button>)}</div>
@@ -556,7 +565,7 @@ export default function App() {
   const [noteSegment, setNoteSegment] = useState<string | null>(null); const [noteKind, setNoteKind] = useState<NoteKind>('note'); const [reviewSegment, setReviewSegment] = useState<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null); const transcriptContentRef = useRef<HTMLDivElement>(null); const followAnchorRef = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0); const lastScrollHeight = useRef(0); const lastClientHeight = useRef(0); const programmaticScrollRef = useRef(false); const scrollGuardTimer = useRef<number | undefined>(undefined); const scrollAnimationRef = useRef<ReturnType<typeof animate> | null>(null);
-  const followGoalRef = useRef<{ goal: number; viewport: number } | null>(null); const followFrameRef = useRef<number | undefined>(undefined); const pauseFollowingRef = useRef<() => void>(() => undefined);
+  const followGoalRef = useRef<{ goal: number; viewport: number } | null>(null); const readingAnchorRef = useRef<{ element: Element; offset: number } | null>(null); const followFrameRef = useRef<number | undefined>(undefined); const pauseFollowingRef = useRef<() => void>(() => undefined);
   const pointerDownRef = useRef(false); const touchStartYRef = useRef<number | null>(null);
   const transcriptStateRef = useRef<{ sessionId: string | null; count: number; revision: string }>({ sessionId: null, count: 0, revision: '' }); const seenSegmentsRef = useRef<Set<string>>(new Set()); const seenSessionRef = useRef<string | null>(null); const groupingRef = useRef<{ sessionId: string | null; state: TranscriptGroupingState }>({ sessionId: null, state: { known: new Set(), paragraphStarts: new Set() } }); const [exportOpen, setExportOpen] = useState(false); const [moreOpen, setMoreOpen] = useState(false);
   const engineButtonRef = useRef<HTMLButtonElement>(null); const exportButtonRef = useRef<HTMLButtonElement>(null); const moreButtonRef = useRef<HTMLButtonElement>(null);
@@ -600,10 +609,10 @@ export default function App() {
     if (preference === 'system') media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);
   }, [state?.settings.theme]);
-  useEffect(() => { localStorage.setItem('lectureedit.sidebar-expanded', sidebarExpanded ? '1' : '0'); }, [sidebarExpanded]);
+  useEffect(() => { try { localStorage.setItem('lectureedit.sidebar-expanded', sidebarExpanded ? '1' : '0'); } catch { /* storage unavailable */ } }, [sidebarExpanded]);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
-      if (event.isComposing || modalRef.current || fullEditorRef.current || !isPrimaryShortcut(event)) return;
+      if (imeActive(event) || modalRef.current || fullEditorRef.current || !isPrimaryShortcut(event)) return;
       if (event.key.toLocaleLowerCase() === 'k' || event.key.toLocaleLowerCase() === 'f') { event.preventDefault(); setSearchOpen(true); }
     };
     window.addEventListener('keydown', shortcut);
@@ -611,7 +620,7 @@ export default function App() {
   }, []);
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.isComposing || (!engineOpen && !exportOpen && !moreOpen)) return;
+      if (event.key !== 'Escape' || imeActive(event) || (!engineOpen && !exportOpen && !moreOpen)) return;
       event.preventDefault();
       event.stopPropagation();
       const trigger = engineOpen ? engineButtonRef.current : exportOpen ? exportButtonRef.current : moreButtonRef.current;
@@ -681,11 +690,14 @@ export default function App() {
     defaultsApplied.current = true;
     if (JSON.stringify(merged) !== JSON.stringify(state.settings)) void update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings: merged }));
   }, [runtime.defaults, state, update]);
-  useEffect(() => { const timer = window.setInterval(() => {
-    adapter.runtimeInfo().then(setRuntime).catch(() => undefined);
-    if (pendingWrites.current > 0) return;
+  useEffect(() => { let infoInFlight = false; let pollInFlight = false; const timer = window.setInterval(() => {
+    // Identical runtime info keeps the previous object so the tree does not re-render every tick,
+    // and a slow snapshot is never queued behind another one.
+    if (!infoInFlight) { infoInFlight = true; adapter.runtimeInfo().then((info) => setRuntime((current) => JSON.stringify(current) === JSON.stringify(info) ? current : info)).catch(() => undefined).finally(() => { infoInFlight = false; }); }
+    if (pendingWrites.current > 0 || pollInFlight) return;
     const request = ++requestSequence.current;
-    adapter.dispatch({ type: adapter.mode === 'demo' ? 'demoTick' : 'snapshot', ...(selected ? { sessionId: selected.id } : {}) }).then((next) => {
+    pollInFlight = true;
+    adapter.dispatch({ type: adapter.mode === 'demo' ? 'demoTick' : 'snapshot', ...(selected ? { sessionId: selected.id } : {}) }).finally(() => { pollInFlight = false; }).then((next) => {
       if (pendingWrites.current === 0 && request >= appliedSequence.current) {
         appliedSequence.current = request;
         if (!stateRef.current || stateSignature(next) !== stateSignature(stateRef.current)) setState(next);
@@ -810,7 +822,7 @@ export default function App() {
   };
   useEffect(() => {
     const saveShortcut = (event: KeyboardEvent) => {
-      if (!fullEditorRef.current || modalRef.current || event.isComposing || !isPrimaryShortcut(event) || event.key.toLocaleLowerCase() !== 's') return;
+      if (!fullEditorRef.current || modalRef.current || imeActive(event) || !isPrimaryShortcut(event) || event.key.toLocaleLowerCase() !== 's') return;
       event.preventDefault(); void saveFullDocument();
     };
     window.addEventListener('keydown', saveShortcut);
@@ -836,15 +848,42 @@ export default function App() {
     followFrameRef.current = undefined;
   }, []);
   const syncFollowPosition = useCallback(() => {
-    if (viewModeRef.current !== 'following' || editorRef.current) return;
+    if (viewModeRef.current !== 'following' || editorRef.current) { readingAnchorRef.current = null; return; }
     const element = transcriptRef.current;
     const target = getFollowTarget();
     if (!element || target === null) return;
     const viewport = element.clientHeight;
+    const contentOffset = (node: Element) => node.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+    // Text above the reading line can be rewritten (auto polish, merges, a new paragraph break).
+    // Pin the sentence being read in the same frame so only genuinely new text moves the page.
+    const reading = readingAnchorRef.current;
+    if (reading && reading.element.isConnected && followGoalRef.current?.viewport === viewport) {
+      const shift = contentOffset(reading.element) - reading.offset;
+      if (Math.abs(shift) >= .5) {
+        const before = element.scrollTop;
+        element.scrollTop = before + shift;
+        const moved = element.scrollTop - before;
+        followGoalRef.current.goal += moved;
+        lastScrollTop.current = element.scrollTop;
+        lastScrollHeight.current = element.scrollHeight;
+      }
+    }
+    // The eye rests on the newest sentence, so that is what stays put.
+    const pickReadingAnchor = () => {
+      const blocks = transcriptContentRef.current?.querySelectorAll('.transcript-block[data-segment]') ?? [];
+      readingAnchorRef.current = null;
+      for (let index = blocks.length - 1; index >= 0; index -= 1) {
+        const transform = (blocks[index] as HTMLElement).style.transform;
+        if (transform && transform !== 'none') continue; // still entering; its rect is moving
+        readingAnchorRef.current = { element: blocks[index], offset: contentOffset(blocks[index]) };
+        return;
+      }
+    };
     const previous = followGoalRef.current;
     // A resized window re-anchors; otherwise the goal only advances (see nextFollowGoal).
     const goal = nextFollowGoal(previous && previous.viewport === viewport ? previous.goal : null, target, viewport);
     followGoalRef.current = { goal, viewport };
+    pickReadingAnchor();
     const settle = () => {
       lastScrollTop.current = element.scrollTop;
       lastScrollHeight.current = element.scrollHeight;
@@ -891,7 +930,7 @@ export default function App() {
     observer.observe(content);
     observer.observe(element);
     syncFollowPosition();
-    return () => { observer.disconnect(); scrollAnimationRef.current?.stop(); stopFollowGlide(); followGoalRef.current = null; };
+    return () => { observer.disconnect(); scrollAnimationRef.current?.stop(); stopFollowGlide(); followGoalRef.current = null; readingAnchorRef.current = null; };
   }, [selected?.id, stopFollowGlide, syncFollowPosition]);
   useLayoutEffect(() => {
     syncFollowPosition();
@@ -901,7 +940,7 @@ export default function App() {
     viewModeRef.current = 'reading_history';
     programmaticScrollRef.current = false;
     if (scrollGuardTimer.current) { clearTimeout(scrollGuardTimer.current); scrollGuardTimer.current = undefined; }
-    scrollAnimationRef.current?.stop(); stopFollowGlide(); followGoalRef.current = null;
+    scrollAnimationRef.current?.stop(); stopFollowGlide(); followGoalRef.current = null; readingAnchorRef.current = null;
     setViewMode('reading_history'); setNoteSegment(null);
   };
   pauseFollowingRef.current = pauseFollowing;
@@ -912,7 +951,7 @@ export default function App() {
     const element = transcriptRef.current;
     const target = getFollowTarget();
     if (!element || target === null) return;
-    scrollAnimationRef.current?.stop(); stopFollowGlide();
+    scrollAnimationRef.current?.stop(); stopFollowGlide(); readingAnchorRef.current = null;
     followGoalRef.current = { goal: target, viewport: element.clientHeight };
     guardProgrammaticScroll(650);
     if (reduce) element.scrollTop = target;
@@ -959,7 +998,7 @@ export default function App() {
     const editShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing = target?.matches('input, textarea, select, [contenteditable="true"]');
-      if (event.isComposing || typing || editorRef.current || modalRef.current || fullEditorRef.current || !isPrimaryShortcut(event) || event.key.toLocaleLowerCase() !== 'e') return;
+      if (imeActive(event) || typing || editorRef.current || modalRef.current || fullEditorRef.current || !isPrimaryShortcut(event) || event.key.toLocaleLowerCase() !== 'e') return;
       if (!selected?.segments.length) return;
       event.preventDefault();
       editCurrentSentence();
@@ -1138,9 +1177,9 @@ export default function App() {
               {fullEditor && fullEditor.sessionId === selected.id ? <FullTranscriptEditor session={selected} values={fullEditor.values} original={fullEditor.original} status={fullEditor.status} error={fullEditor.error} onText={(segmentId, text) => setFullEditor((value) => value ? { ...value, values: { ...value.values, [segmentId]: text }, status: 'editing', error: '' } : value)} onSave={() => void saveFullDocument()} onDone={() => void saveFullDocument(true)} /> :
               <TranscriptAssist segments={selected.segments} sessionId={selected.id} configured={Boolean(runtime.deepseekKeyConfigured)} onSave={async (segmentId, text, sourceLabel) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId, kind: 'note', text, sourceLabel, imageData: null })))}>
               <div className="session-intro"><div>{selectedProject && <p className="session-crumb"><Folder size={13} strokeWidth={1.8} /><span>{selectedProject.title}</span></p>}<div className="session-title-row"><h2>{selected.title}</h2>{adapter.mode === 'demo' && <span className="demo-label">演示</span>}</div><p className="session-meta"><span>{new Intl.DateTimeFormat('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }).format(selected.createdAt)}</span>{totalSamples > 0 && <span className="meta-number">{fmtDuration(totalSamples)}</span>}<span className="meta-number">{wordCount.toLocaleString('zh-CN')} 字</span><span>{cloudEngine ? 'Soniox · stt-rt-v5' : selected.runs[0]?.source === 'import' ? '导入音频 · 本地转写' : selected.runs[0]?.source === 'system' ? '系统声音 · 本地转写' : '麦克风 · 本地转写'}</span><span className="saved-state"><Check size={13} /> 已保存</span></p></div><button className="full-edit-trigger" onClick={() => void beginFullEdit()} disabled={captureInProgress} title={captureInProgress ? '录音结束后编辑全文' : '在连续页面中编辑完整文稿'}><Pencil size={14} /> 编辑全文</button></div>
-              {transcriptGroups.map((group, groupIndex) => <section className={`transcript-paragraph ${groupIndex >= transcriptGroups.length - 3 ? 'is-recent' : ''}`} key={group.map((segment) => segment.id).join('|')}><button className="paragraph-time" tabIndex={-1} aria-label={`从 ${fmtTime(segmentClock(selected, group[0]))} 播放`} title="从这里播放" onClick={() => void playSegment(group[0])}>{fmtTime(segmentClock(selected, group[0]))}</button><p>{group.map((segment, index) => {
+              {transcriptGroups.map((group, groupIndex) => <section className={`transcript-paragraph ${groupIndex >= transcriptGroups.length - 3 ? 'is-recent' : ''}`} key={group[0].id}><button className="paragraph-time" tabIndex={-1} aria-label={`从 ${fmtTime(segmentClock(selected, group[0]))} 播放`} title="从这里播放" onClick={() => void playSegment(group[0])}>{fmtTime(segmentClock(selected, group[0]))}</button><p>{group.map((segment, index) => {
                 const entering = seenSessionRef.current === selected.id && seenSegmentsRef.current.size > 0 && !seenSegmentsRef.current.has(segment.id);
-                return <Fragment key={segment.id}>{index > 0 ? ' ' : null}<TranscriptBlock segment={segment} active={editor?.draft.segmentId === segment.id} playingKey={playingSegmentId} entering={entering} query="" onEdit={() => void beginEdit(segment)} onPlay={(anchor, playbackKey) => void playSegment(segment, anchor, playbackKey)} onUndo={() => void moveSegmentHistory(segment, 'undo')} onRedo={() => void moveSegmentHistory(segment, 'redo')} onReview={() => { setReviewSegment(segment.id); setModal('review'); }} composer={(sliceKey) => <InlineNoteComposer open={noteSegment === sliceKey} onOpenChange={(open) => { setNoteSegment(open ? sliceKey : null); if (open) setViewMode('reading_history'); }} kind={noteKind} setKind={setNoteKind} configured={Boolean(runtime.deepseekKeyConfigured)} onSubmit={async (value) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId: segment.id, ...value })))} />} /></Fragment>;
+                return <Fragment key={segment.id}>{index > 0 ? ' ' : null}<TranscriptBlock segment={segment} active={editor?.draft.segmentId === segment.id} playingKey={playingSegmentId} entering={entering} query="" onEdit={() => void beginEdit(segment)} onPlay={(anchor, playbackKey) => void playSegment(segment, anchor, playbackKey)} onUndo={() => void moveSegmentHistory(segment, 'undo')} onRedo={() => void moveSegmentHistory(segment, 'redo')} onReview={() => { setReviewSegment(segment.id); setModal('review'); }} composer={(sliceKey) => noteSegment !== sliceKey ? <span className="inline-insert"><button className="insert-button" aria-expanded={false} aria-label="为这句添加笔记或资料" title="添加笔记、例子、公式或图片" onClick={() => { setNoteSegment(sliceKey); setViewMode('reading_history'); }}><Plus size={14} /><span>笔记</span></button></span> : <InlineNoteComposer open onOpenChange={(open) => { setNoteSegment(open ? sliceKey : null); if (open) setViewMode('reading_history'); }} kind={noteKind} setKind={setNoteKind} configured={Boolean(runtime.deepseekKeyConfigured)} onSubmit={async (value) => Boolean(await update(adapter.dispatch({ type: 'addNote', commandId: commandId(), sessionId: selected.id, segmentId: segment.id, ...value })))} />} /></Fragment>;
               })}</p>{group.flatMap((segment) => selected.notes.filter((note) => note.segmentId === segment.id)).map((note) => <NoteBlock key={note.id} note={note} onRemove={() => void update(adapter.dispatch({ type: 'removeNote', commandId: commandId(), sessionId: selected.id, noteId: note.id }))} />)}</section>)}
               <div className="transcript-follow-anchor" ref={followAnchorRef} aria-hidden="true" />
               <div className="transcript-end"><span />{selected.recordingState === 'recording' ? <p><span className="live-caret" />等待下一段内容</p> : <p>转写结束{totalSamples > 0 && <> · {fmtDuration(totalSamples)}</>}</p>}<span /></div>
@@ -1151,7 +1190,7 @@ export default function App() {
       </div></LayoutGroup>
     </GlassSurface>
     <GlobalSearch open={searchOpen} sessions={state.sessions} projects={state.projects ?? []} onClose={() => setSearchOpen(false)} onNavigate={navigateSearch} />
-    {modal === 'new' && <Dialog title="新建课堂" description={newProjectId ? `课堂将收入课程分组“${state.projects.find(project => project.id === newProjectId)?.title ?? '未命名课程'}”。` : '课堂创建成功后，再在准备好时开始录音。'} onClose={() => { setModal(null); setNewProjectId(null); }}><label className="form-field"><span>课堂名称</span><input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) void createCourse(); }} placeholder="例如：Lecture 1 · Markets & Choices" /></label>{dialogError && <p className="inline-error" role="alert"><CircleAlert size={14} />{dialogError}</p>}<div className="course-setup"><div><Languages size={17} /><span><strong>{state.settings.language === 'auto' ? '自动检测语言' : state.settings.language === 'zh' ? '中文' : state.settings.language === 'en' ? '英语' : state.settings.language}</strong><small>可在本地转写设置中修改</small></span></div><div><Mic size={17} /><span><strong>{source === 'microphone' ? '麦克风' : '系统声音'}</strong><small>开始录音前可以切换音频来源</small></span></div></div><footer><button className="secondary-button" onClick={() => { setModal(null); setNewProjectId(null); }}>取消</button><button className="primary-button" disabled={creatingCourse} onClick={() => void createCourse()}>{creatingCourse ? '正在创建…' : '创建课堂'}</button></footer></Dialog>}
+    {modal === 'new' && <Dialog title="新建课堂" description={newProjectId ? `课堂将收入课程分组“${state.projects.find(project => project.id === newProjectId)?.title ?? '未命名课程'}”。` : '课堂创建成功后，再在准备好时开始录音。'} onClose={() => { setModal(null); setNewProjectId(null); }}><label className="form-field"><span>课堂名称</span><input autoFocus value={newTitle} onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !imeActive(e.nativeEvent)) void createCourse(); }} placeholder="例如：Lecture 1 · Markets & Choices" /></label>{dialogError && <p className="inline-error" role="alert"><CircleAlert size={14} />{dialogError}</p>}<div className="course-setup"><div><Languages size={17} /><span><strong>{state.settings.language === 'auto' ? '自动检测语言' : state.settings.language === 'zh' ? '中文' : state.settings.language === 'en' ? '英语' : state.settings.language}</strong><small>可在本地转写设置中修改</small></span></div><div><Mic size={17} /><span><strong>{source === 'microphone' ? '麦克风' : '系统声音'}</strong><small>开始录音前可以切换音频来源</small></span></div></div><footer><button className="secondary-button" onClick={() => { setModal(null); setNewProjectId(null); }}>取消</button><button className="primary-button" disabled={creatingCourse} onClick={() => void createCourse()}>{creatingCourse ? '正在创建…' : '创建课堂'}</button></footer></Dialog>}
     {modal === 'settings' && <SettingsDialog key={selected?.id ?? 'none'} settings={state.settings} session={selected} project={selectedProject} runtime={runtime} initialEngine={pendingEngine} onClose={() => { setPendingEngine(undefined); setModal(null); }} onPick={handlePickPath} onInstall={async () => { const result = await update(adapter.dispatch({ type: 'installModel', commandId: commandId(), engine: 'qwen' }), { background: true }); if (!result) return false; return prepareModel(); }} onPrepare={prepareModel} onSave={async (settings, vocabulary) => { let failure = ''; const result = await update(adapter.dispatch({ type: 'settings', commandId: commandId(), settings, ...(selectedProject ? { projectId: selectedProject.id, projectVocabulary: vocabulary.projectVocabulary } : {}), ...(selected ? { sessionId: selected.id, sessionVocabulary: vocabulary.sessionVocabulary } : {}) }), { onError: (message) => { failure = message; } }); if (result) { setPendingEngine(undefined); setModal(null); return true; } if (failure) throw new Error(failure); return false; }} />}
     {modal === 'review' && reviewed && <ReviewDialog segment={reviewed} error={dialogError} onClose={() => setModal(null)} onResolve={(action, text) => { if (!selected) return; void update(adapter.dispatch({ type: 'resolve', commandId: commandId(), sessionId: selected.id, segmentId: reviewed.id, expectedUserSeq: reviewed.userSeq, expectedMachineRevision: reviewed.machineRevision, action, text }), { onError: setDialogError }).then((result) => { if (result) setModal(null); }); }} />}
   </div>;

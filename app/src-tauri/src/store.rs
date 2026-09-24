@@ -37,7 +37,7 @@ impl Store {
             .map_err(db_error)?;
         connection
             .execute_batch(
-                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
             )
             .map_err(db_error)?;
         connection.execute_batch(SCHEMA).map_err(db_error)?;
@@ -70,6 +70,11 @@ impl Store {
 
     pub fn snapshot(&self) -> State {
         self.state.clone()
+    }
+
+    /// Borrow the current state without cloning the whole library.
+    pub fn state(&self) -> &State {
+        &self.state
     }
 
     pub fn dispatch(&mut self, command: Value) -> Result<State, String> {

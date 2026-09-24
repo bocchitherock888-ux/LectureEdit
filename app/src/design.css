@@ -832,3 +832,109 @@ html[data-theme="dark"] .app-shell {
 html[data-theme="dark"] .record-pause-button { width: 34px; padding: 0; justify-content: center; }
 .record-pause-button span { display: none; }
 .empty-state .empty-eyebrow { max-width: 420px; margin: 0 0 22px; overflow: hidden; color: var(--faint); font-size: 12.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Sentence selection: select first, then act ─────────────────────────
+   Hover only tints a sentence; a click (or Tab) selects it with a marker
+   highlight and brings up one toolbar for everything you can do with it. */
+.segment-copy { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.segment-copy:hover:not(:focus),
+html[data-theme="dark"] .segment-copy:hover:not(:focus) { background: rgb(var(--accent-rgb) / .05); box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / .05); }
+.segment-copy:focus,
+html[data-theme="dark"] .segment-copy:focus {
+  color: inherit;
+  outline: 0;
+  background: linear-gradient(180deg, transparent 8%, rgb(var(--accent-rgb) / .13) 8%, rgb(var(--accent-rgb) / .13) 94%, transparent 94%);
+  box-shadow: none;
+}
+html[data-theme="dark"] .segment-copy:focus { background: linear-gradient(180deg, transparent 8%, rgb(var(--accent-rgb) / .22) 8%, rgb(var(--accent-rgb) / .22) 94%, transparent 94%); }
+.segment-copy:focus-visible { outline: 1.5px solid rgb(var(--accent-rgb) / .45); outline-offset: 1px; }
+
+.sentence-unit:hover > .segment-tools { opacity: 0; pointer-events: none; transform: translateY(4px) scale(.98); }
+.sentence-unit:focus-within > .segment-tools,
+.sentence-unit:has(.insert-button[aria-expanded="true"]) > .segment-tools { opacity: 1; pointer-events: auto; transform: none; }
+.segment-tools,
+html[data-theme="dark"] .segment-tools {
+  gap: 1px;
+  padding: 4px;
+  border-radius: 13px;
+  transform: translateY(4px) scale(.98);
+  transform-origin: 100% 100%;
+  transition: opacity 140ms var(--ease), transform 220ms cubic-bezier(.22, 1, .36, 1);
+}
+.segment-tools > button, .insert-button,
+html[data-theme="dark"] .segment-tools > button,
+html[data-theme="dark"] .insert-button { min-height: 30px; gap: 5px; padding: 0 9px; border-radius: 9px; font-size: 12px; font-weight: 560; }
+.segment-tools > button.tool-icon { min-width: 30px; padding: 0; }
+.segment-tools > button.tool-review { color: #a15c07; }
+html[data-theme="dark"] .segment-tools > button.tool-review { color: #f2b35e; }
+.segment-tools > button:active, .insert-button:active { transform: scale(.96); }
+.tool-divider { align-self: stretch; width: 1px; margin: 6px 3px; background: var(--line); }
+@media (prefers-reduced-motion: reduce) { .segment-tools, html[data-theme="dark"] .segment-tools { transform: none; transition: opacity 120ms linear; } }
+
+/* ── Notes: quiet cards tinted by kind, no rule down the margin ─────────── */
+.note-block,
+html[data-theme="dark"] .note-block {
+  --note-rgb: 191 132 34;
+  position: relative;
+  margin: 14px 0 18px;
+  padding: 11px 16px 14px;
+  border: 1px solid rgb(var(--note-rgb) / .15);
+  border-radius: 14px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgb(var(--note-rgb) / .075), transparent 60%),
+    rgb(var(--note-rgb) / .035);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .55), 0 1px 2px rgb(24 31 43 / .035);
+  transition: border-color 160ms var(--ease), box-shadow 160ms var(--ease);
+}
+html[data-theme="dark"] .note-block {
+  border-color: rgb(var(--note-rgb) / .22);
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgb(var(--note-rgb) / .13), transparent 60%),
+    rgb(var(--note-rgb) / .06);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .04);
+}
+.note-block:hover { border-color: rgb(var(--note-rgb) / .26); box-shadow: inset 0 1px 0 rgb(255 255 255 / .55), 0 4px 14px rgb(24 31 43 / .06); }
+html[data-theme="dark"] .note-block:hover { border-color: rgb(var(--note-rgb) / .34); box-shadow: inset 0 1px 0 rgb(255 255 255 / .05), 0 4px 16px rgb(0 0 0 / .25); }
+.note-block.note-example { --note-rgb: 38 138 118; }
+.note-block.note-formula { --note-rgb: 92 104 220; }
+.note-block.note-image { --note-rgb: 112 120 134; }
+html[data-theme="dark"] .note-block.note-example { --note-rgb: 88 196 172; }
+html[data-theme="dark"] .note-block.note-formula { --note-rgb: 146 156 255; }
+html[data-theme="dark"] .note-block.note-image { --note-rgb: 160 168 182; }
+html[data-theme="dark"] .note-block { --note-rgb: 232 176 82; }
+html[data-theme="dark"] .note-block.note-example { --note-rgb: 88 196 172; }
+html[data-theme="dark"] .note-block.note-formula { --note-rgb: 146 156 255; }
+html[data-theme="dark"] .note-block.note-image { --note-rgb: 160 168 182; }
+.note-block header { min-height: 28px; gap: 8px; }
+.note-block header > span:first-child,
+html[data-theme="dark"] .note-block header > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgb(var(--note-rgb));
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+.note-block header > span:first-child svg {
+  box-sizing: content-box;
+  padding: 4px;
+  border-radius: 7px;
+  background: rgb(var(--note-rgb) / .13);
+}
+.note-block header .note-source,
+html[data-theme="dark"] .note-block header .note-source { flex: 1; color: var(--faint); font-size: 12px; font-weight: 450; }
+.note-block header .note-source::before { content: "·"; margin-right: 8px; opacity: .6; }
+.note-block p,
+html[data-theme="dark"] .note-block p { margin: 6px 0 0; color: var(--ink-2); font-size: calc(var(--reader-font) - 2px); line-height: 1.65; white-space: pre-wrap; }
+.note-block.note-example p { font-style: italic; }
+.note-block.note-example::after {
+  position: absolute;
+  right: 16px;
+  bottom: -6px;
+  color: rgb(var(--note-rgb) / .16);
+  font: 700 64px/1 Georgia, "Times New Roman", serif;
+  pointer-events: none;
+  content: "\201D";
+}
+.note-block .formula-preview { margin: 8px 0 2px; }

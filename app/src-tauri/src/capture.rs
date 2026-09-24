@@ -1,6 +1,11 @@
 use crate::native_process::SpawnTied;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
+
+/// Audio buffers waiting for the archiver. Device callbacks deliver roughly
+/// 10 ms each, so this rides out a stall of about 20 s (a slow disk sync or a
+/// large save) before any audio is replaced by a recorded gap.
+const FRAME_QUEUE: usize = 2048;
 use std::{
     io::{Read, Write},
     path::PathBuf,
@@ -42,7 +47,7 @@ pub struct Source {
     pub handle: CaptureHandle,
 }
 pub fn microphone() -> Result<Source, String> {
-    let (tx, rx) = bounded(96);
+    let (tx, rx) = bounded(FRAME_QUEUE);
     let (etx, erx) = bounded(16);
     let (_gtx, grx) = bounded(1);
     let (ready, rdy) = bounded(1);
@@ -261,7 +266,7 @@ pub fn system(helper: PathBuf) -> Result<Source, String> {
         .map_err(|e| e.to_string())?;
     let mut out = child.stdout.take().ok_or("系统声音管道不可用")?;
     let err = child.stderr.take().ok_or("系统声音错误管道不可用")?;
-    let (tx, rx) = bounded(96);
+    let (tx, rx) = bounded(FRAME_QUEUE);
     let (etx, erx) = bounded(16);
     let (gtx, grx) = bounded(256);
     let (ready, rdy) = bounded(1);

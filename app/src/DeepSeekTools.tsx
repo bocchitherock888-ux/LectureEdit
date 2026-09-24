@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { imeActive } from './ime';
+import { createContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, CircleAlert, KeyRound, Languages, LoaderCircle, ScanText, X } from 'lucide-react';
 import katex from 'katex';
@@ -26,7 +27,7 @@ export function DeepSeekConnection({ configured, onConfigured }: { configured: b
   return <section className="deepseek-connection" aria-label="DeepSeek 连接">
     <div className="ai-connection-heading"><span><KeyRound size={16} /> DeepSeek</span><small>{ready ? '已配置' : 'V4.1 Flash'}</small></div>
     <p>轻度整理已确认的转写，也可翻译选中文字或识别图片公式。</p>
-    <div className="ai-key-row"><input aria-label="DeepSeek API Key" type="password" autoComplete="off" spellCheck={false} value={key} disabled={busy || adapter.mode === 'demo'} placeholder={ready ? '填写新 Key 可替换' : '粘贴 DeepSeek API Key'} onChange={(event) => setKey(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); if (!event.nativeEvent.isComposing && key.trim()) void save(); } }} /><button type="button" className="secondary-button" disabled={busy || !key.trim() || adapter.mode === 'demo'} onClick={() => void save()}>{busy ? '保存中…' : '保存 Key'}</button></div>
+    <div className="ai-key-row"><input aria-label="DeepSeek API Key" type="password" autoComplete="off" spellCheck={false} value={key} disabled={busy || adapter.mode === 'demo'} placeholder={ready ? '填写新 Key 可替换' : '粘贴 DeepSeek API Key'} onChange={(event) => setKey(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); if (!imeActive(event.nativeEvent) && key.trim()) void save(); } }} /><button type="button" className="secondary-button" disabled={busy || !key.trim() || adapter.mode === 'demo'} onClick={() => void save()}>{busy ? '保存中…' : '保存 Key'}</button></div>
     <p className="ai-disclosure">翻译和公式识别只发送当前选择的内容；启用轻度整理后，已确认的转写段落会在后台发送。费用计入你的账户，Key 安全保存在系统凭据中。</p>
     {ready && <button type="button" className="text-button" disabled={busy} onClick={() => void save(true)}>删除已保存 Key</button>}
     {error && <p className="inline-error" role="alert">{error}</p>}
@@ -41,7 +42,7 @@ function AssistDialog({ children, onClose }: { children: ReactNode; onClose: () 
     const previous = document.activeElement as HTMLElement | null;
     panel.current?.focus();
     const keyboard = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); closeAction.current(); }
+      if (event.key === 'Escape' && !imeActive(event)) { event.stopPropagation(); closeAction.current(); }
       if (event.key !== 'Tab') return;
       const controls = [...(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select, textarea:not(:disabled)') ?? [])].filter((item) => item.getClientRects().length);
       const first = controls[0], last = controls.at(-1);
@@ -87,11 +88,13 @@ function pointInsideRange(range: Range, x: number, y: number) {
   return [...range.getClientRects()].some((rect) => x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
 }
 
+/** Lets a sentence's own toolbar open translation without a second floating bubble. */
+export const TranscriptTranslateContext = createContext<((segmentId: string, text: string, anchor: DOMRect) => void) | null>(null);
+
 export function TranscriptAssist({ children, segments, sessionId, configured, onSave }: { children: ReactNode; segments: Segment[]; sessionId: string; configured: boolean; onSave: (segmentId: string, text: string, source: string) => Promise<boolean> }) {
   const root = useRef<HTMLDivElement>(null);
   const pointerStart = useRef<{ x: number; y: number; selection: string } | null>(null);
   const selectionButton = useRef<HTMLButtonElement>(null);
-  const focusSelectionAction = useRef(false);
   const [selection, setSelection] = useState<SelectionAnchor | null>(null);
   const [dialog, setDialog] = useState<SelectionAnchor | null>(null);
   const [target, setTarget] = useState<'zh' | 'en'>('zh');
@@ -109,28 +112,13 @@ export function TranscriptAssist({ children, segments, sessionId, configured, on
   useEffect(() => () => { request.current += 1; }, []);
   useEffect(() => {
     if (!selection) return;
-    if (focusSelectionAction.current) {
-      focusSelectionAction.current = false;
-      requestAnimationFrame(() => selectionButton.current?.focus());
-    }
     const dismiss = (event: MouseEvent) => { if (!(event.target as Element).closest('.selection-assist')) setSelection(null); };
-    const scroll = () => setSelection(null);
+    // Live following glides the transcript under the bubble; only a reader's own scroll dismisses it.
+    const scroll = (event: Event) => { if (event.target instanceof Element && event.target.classList.contains('is-following')) return; setSelection(null); };
     document.addEventListener('mousedown', dismiss);
     window.addEventListener('scroll', scroll, true);
     return () => { document.removeEventListener('mousedown', dismiss); window.removeEventListener('scroll', scroll, true); };
   }, [selection]);
-  const captureSentenceNode = (sentence: HTMLElement | null, x?: number, y?: number) => {
-    const rootNode = root.current;
-    const segmentId = sentence?.closest<HTMLElement>('[data-segment]')?.dataset.segment;
-    const text = normalizedTranscriptText(sentence?.textContent ?? '');
-    if (!rootNode || !sentence || !rootNode.contains(sentence) || !segmentId || !text) { setSelection(null); return; }
-    window.getSelection()?.removeAllRanges();
-    const rect = sentence.getBoundingClientRect();
-    setSelection({ text, segmentId, x: x || rect.left, y: y || rect.bottom });
-  };
-  const captureSentence = (event: React.MouseEvent<HTMLDivElement>) => {
-    captureSentenceNode(event.target instanceof Element ? event.target.closest<HTMLElement>('.segment-copy:not(.segment-ghost)') : null, event.clientX, event.clientY);
-  };
   const captureSelection = (event?: React.MouseEvent<HTMLDivElement>) => {
     const sel = window.getSelection();
     const rootNode = root.current;
@@ -162,13 +150,11 @@ export function TranscriptAssist({ children, segments, sessionId, configured, on
     pointerStart.current = null;
     const dragged = Boolean(start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4);
     const changedSelection = Boolean(start && selectionSignature(window.getSelection()) && selectionSignature(window.getSelection()) !== start.selection);
-    if (dragged || changedSelection || event.detail > 1) captureSelection(event); else captureSentence(event);
+    // A plain click selects the sentence, whose own toolbar carries 翻译; only a text
+    // selection (drag, double-click) gets the floating translate bubble.
+    if (dragged || changedSelection || event.detail > 1) captureSelection(event); else setSelection(null);
   }} onKeyUp={(event) => {
     if (event.key.startsWith('Arrow') && event.shiftKey) captureSelection();
-    else if (event.key === 'Enter' || event.key === ' ') {
-      const sentence = event.target instanceof Element ? event.target.closest<HTMLElement>('.segment-copy:not(.segment-ghost)') : null;
-      if (sentence) { focusSelectionAction.current = true; captureSentenceNode(sentence); }
-    }
   }} onContextMenu={(event) => {
     const selected = window.getSelection();
     const inside = selected && root.current?.contains(selected.anchorNode) && root.current.contains(selected.focusNode);
@@ -180,7 +166,7 @@ export function TranscriptAssist({ children, segments, sessionId, configured, on
     const useSelection = Boolean(inside && selected && !selected.isCollapsed && selected.rangeCount && pointInsideRange(selected.getRangeAt(0), event.clientX, event.clientY));
     const selectedValue = useSelection && root.current ? transcriptSelection(root.current, selected!.getRangeAt(0)) : null;
     setSelection({ text: selectedValue?.text ?? normalizedTranscriptText(sentence?.textContent ?? segment.displayText), segmentId: selectedValue?.segmentId ?? segment.id, x: event.clientX || element!.getBoundingClientRect().left, y: event.clientY || element!.getBoundingClientRect().bottom });
-  }}>{children}
+  }}><TranscriptTranslateContext.Provider value={(segmentId, text, anchor) => openAndTranslate({ segmentId, text: normalizedTranscriptText(text), x: anchor.left, y: anchor.bottom })}>{children}</TranscriptTranslateContext.Provider>
     {selection && createPortal(<div className="selection-assist" onMouseUp={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} style={{ left: Math.max(12, Math.min(selection.x, window.innerWidth - 112)), top: Math.max(12, Math.min(selection.y + 10, window.innerHeight - 58)) }}><button ref={selectionButton} type="button" aria-haspopup="dialog" onMouseDown={(event) => event.preventDefault()} onClick={() => openAndTranslate(selection)}><Languages size={15} /> 翻译</button></div>, document.body)}
     {dialog && <AssistDialog onClose={() => { if (!saveLock.current) close(); }}>
       <header><div><h2><Languages size={20} /> 译文</h2><p>{busy ? '正在翻译所选内容…' : '翻译完成后可保存为课堂备注。'}</p></div><button type="button" className="icon-button" aria-label="关闭翻译" disabled={saving} onClick={close}><X size={18} /></button></header>
