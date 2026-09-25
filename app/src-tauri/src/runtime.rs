@@ -19,7 +19,7 @@ use std::{
 };
 use uuid::Uuid;
 const WHISPER_REALTIME_UNAVAILABLE: &str =
-    "Whisper 实时录音尚未启用，请在转写模型中选择 Qwen 或 Soniox。";
+    "Whisper 实时录音尚未启用，请在转写模型中选择 Qwen 或云端识别。";
 const QWEN_MODEL_EXITED: &str = "本地模型进程已退出，请重新准备模型后再开始录音。";
 const QWEN_MAX_SEGMENT_SAMPLES: u64 = 8 * 16_000;
 fn now() -> u64 {
@@ -318,26 +318,7 @@ struct CloudResume {
     cursor: u64,
     ordinal: u64,
 }
-trait CloudStream: Send {
-    fn send_audio(&mut self, bytes: &[u8]) -> Result<(), String>;
-    fn finish_input(&mut self) -> Result<(), String>;
-    fn poll(&mut self) -> Result<Vec<crate::soniox::Update>, String>;
-    fn finished(&self) -> bool;
-}
-impl CloudStream for crate::soniox::Client {
-    fn send_audio(&mut self, bytes: &[u8]) -> Result<(), String> {
-        crate::soniox::Client::send_audio(self, bytes)
-    }
-    fn finish_input(&mut self) -> Result<(), String> {
-        crate::soniox::Client::finish_input(self)
-    }
-    fn poll(&mut self) -> Result<Vec<crate::soniox::Update>, String> {
-        crate::soniox::Client::poll(self)
-    }
-    fn finished(&self) -> bool {
-        crate::soniox::Client::finished(self)
-    }
-}
+use crate::cloud::{CloudStream, Provider};
 pub struct Runtime {
     pub store: Arc<Mutex<Store>>,
     root: PathBuf,
@@ -354,7 +335,8 @@ pub struct Runtime {
     local_model_verification: Arc<Mutex<Vec<LocalModelVerification>>>,
     prepare_requested: AtomicBool,
     persist_credentials: bool,
-    soniox_key: Mutex<Option<String>>,
+    /// API keys of the cloud speech services, by provider. Kept out of course data.
+    cloud_keys: Mutex<HashMap<Provider, String>>,
     deepseek_credential: Arc<Mutex<DeepSeekCredential>>,
     auto_polish_scheduled: Arc<Mutex<HashSet<String>>>,
     /// Outcome of the most recent automatic polish, so a failure is visible.
@@ -379,6 +361,7 @@ impl Runtime {
                 let engine = v["settings"]["engine"].clone();
                 let language = v["settings"]["language"].clone();
                 let consent = v["settings"]["cloudConsent"].clone();
+                let region = v["settings"]["cloudRegion"].clone();
                 let vocabulary = v["settings"]["customVocabulary"].clone();
                 let auto_polish = v["settings"]["autoPolish"].clone();
                 let theme = v["settings"]["theme"].clone();
@@ -394,10 +377,11 @@ impl Runtime {
                 if auto_polish.is_boolean() {
                     v["settings"]["autoPolish"] = auto_polish;
                 }
-                if engine == "soniox" {
+                if engine.as_str().is_some_and(crate::cloud::is_cloud_engine) {
                     v["settings"]["engine"] = engine;
                     v["settings"]["language"] = language;
                     v["settings"]["cloudConsent"] = consent;
+                    v["settings"]["cloudRegion"] = region;
                 }
             } else if v["settings"]["engine"] == "qwen"
                 && v["settings"]["executable"].as_str().is_some_and(|p| {
@@ -412,9 +396,15 @@ impl Runtime {
             *s = serde_json::from_value(v).map_err(|e| e.to_string())?;
             Ok(())
         })?;
-        let soniox_key = crate::credentials::load(crate::credentials::CredentialKind::Soniox)
-            .ok()
-            .flatten();
+        let cloud_keys: HashMap<Provider, String> = Provider::ALL
+            .into_iter()
+            .filter_map(|provider| {
+                crate::credentials::load(provider.credential())
+                    .ok()
+                    .flatten()
+                    .map(|key| (provider, key))
+            })
+            .collect();
         let deepseek_key = crate::credentials::load(crate::credentials::CredentialKind::DeepSeek)
             .ok()
             .flatten();
@@ -440,7 +430,7 @@ impl Runtime {
             local_model_verification: Arc::new(Mutex::new(Vec::new())),
             prepare_requested: AtomicBool::new(true),
             persist_credentials: true,
-            soniox_key: Mutex::new(soniox_key),
+            cloud_keys: Mutex::new(cloud_keys),
             deepseek_credential: Arc::new(Mutex::new(DeepSeekCredential {
                 key: deepseek_key,
                 epoch: 0,
@@ -524,20 +514,33 @@ impl Runtime {
     }
     pub fn dispatch(self: &Arc<Self>, command: Value) -> Result<State, String> {
         let kind = command["type"].as_str().unwrap_or("");
-        if kind == "configureSoniox" {
-            let key = field(&command, "apiKey")?;
-            if key.len() > 256 {
-                return Err("Soniox API 密钥格式无效".into());
+        if kind == "configureSoniox" || kind == "configureCloudKey" {
+            let provider = if kind == "configureSoniox" {
+                Provider::Soniox
+            } else {
+                Provider::from_engine(command["provider"].as_str().unwrap_or(""))
+                    .ok_or("未知的云端服务")?
+            };
+            let key = field(&command, "apiKey")?.trim().to_owned();
+            if !key.is_empty() {
+                crate::cloud::validate_key(provider, &key)?;
             }
             let configured = !key.is_empty();
             if self.persist_credentials {
-                crate::credentials::save(
-                    crate::credentials::CredentialKind::Soniox,
-                    configured.then_some(key.as_str()),
-                )?;
+                crate::credentials::save(provider.credential(), configured.then_some(key.as_str()))?;
             }
-            *self.soniox_key.lock().map_err(|_| "Soniox 密钥不可用")? = configured.then_some(key);
-            if !configured {
+            {
+                let mut keys = self.cloud_keys.lock().map_err(|_| "云端密钥不可用")?;
+                if configured {
+                    keys.insert(provider, key);
+                } else {
+                    keys.remove(&provider);
+                }
+            }
+            // Removing a key stops cloud work, unless another service with its own key is selected.
+            let selected = self.value()?["settings"]["engine"].as_str().and_then(Provider::from_engine);
+            let other_service = selected.is_some_and(|selected| selected != provider);
+            if !configured && !other_service {
                 if let Some(task) = self
                     .cloud
                     .lock()
@@ -688,9 +691,11 @@ impl Runtime {
             }
             "retryInference" => {
                 let sid = field(&command, "sessionId")?;
-                let cloud_selected = self.value()?["settings"]["engine"] == "soniox";
+                let cloud_selected = self.value()?["settings"]["engine"]
+                    .as_str()
+                    .is_some_and(crate::cloud::is_cloud_engine);
                 if cloud_selected {
-                    self.soniox_configuration(&sid)?;
+                    self.cloud_configuration(&sid)?;
                 } else {
                     self.prepare_requested.store(true, Ordering::SeqCst);
                 }
@@ -764,7 +769,7 @@ impl Runtime {
                     .map_err(|_| "云端转写控制器不可用")?
                     .is_some()
                 {
-                    return Err("Soniox 转写正在进行，请完成或暂停后再安装本地模型".into());
+                    return Err("云端转写正在进行，请完成或暂停后再安装本地模型".into());
                 }
                 *self
                     .model_download
@@ -856,9 +861,12 @@ impl Runtime {
                     }
                 }
                 let incoming = command.get("settings").cloned().ok_or("MISSING_SETTINGS")?;
-                // The local worker idles while Soniox is selected, so queued Qwen audio would strand.
-                if incoming["engine"] == "soniox" && self.value()?["settings"]["engine"] != "soniox"
-                {
+                // The local worker idles while a cloud service is selected, so queued Qwen audio would strand.
+                let to_cloud = incoming["engine"].as_str().is_some_and(crate::cloud::is_cloud_engine);
+                let from_cloud = self.value()?["settings"]["engine"]
+                    .as_str()
+                    .is_some_and(crate::cloud::is_cloud_engine);
+                if to_cloud && !from_cloud {
                     let pending = self
                         .jobs()?
                         .iter()
@@ -866,7 +874,7 @@ impl Runtime {
                         .count();
                     if pending > 0 {
                         return Err(format!(
-                            "还有 {pending} 段音频正在本地转写，请等待完成后再切换到 Soniox"
+                            "还有 {pending} 段音频正在本地转写，请等待完成后再切换到云端识别"
                         ));
                     }
                 }
@@ -1020,7 +1028,7 @@ impl Runtime {
         let defaults = crate::models::defaults(&self.root, &self.resources);
         let local_model_installed = match settings["engine"].as_str() {
             Some("qwen" | "qwen3-asr") => self.local_qwen_installed(&settings),
-            Some("soniox") => {
+            Some(engine) if crate::cloud::is_cloud_engine(engine) => {
                 self.local_qwen_installed(&settings) || self.local_qwen_installed(&defaults)
             }
             _ => self.local_qwen_installed(&defaults),
@@ -1049,26 +1057,34 @@ impl Runtime {
                     .unwrap_or((false, Value::Null))
             })
             .unwrap_or((false, Value::Null));
-        let cloud_key_configured = self
-            .soniox_key
+        let configured_keys = self
+            .cloud_keys
             .lock()
-            .is_ok_and(|key| key.as_ref().is_some_and(|key| !key.is_empty()));
+            .map(|keys| keys.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let cloud_keys: serde_json::Map<String, Value> = Provider::ALL
+            .into_iter()
+            .map(|provider| (provider.engine().to_owned(), json!(configured_keys.contains(&provider))))
+            .collect();
+        let selected_provider = settings["engine"].as_str().and_then(Provider::from_engine);
+        // Older front ends read this as "the Soniox key"; it now means the selected service's key.
+        let cloud_key_configured = configured_keys.contains(&selected_provider.unwrap_or(Provider::Soniox));
         let deepseek_key_configured = self
             .deepseek_credential
             .lock()
             .is_ok_and(|credential| credential.key.as_ref().is_some_and(|key| !key.is_empty()));
         if settings["engine"] == "whisper" {
-            return json!({"platform":std::env::consts::OS,"modelInstalled":model_files_present(&settings),"localModelInstalled":local_model_installed,"modelDownload":model_download,"modelReady":false,"modelState":"error","modelError":WHISPER_REALTIME_UNAVAILABLE,"cloudKeyConfigured":cloud_key_configured,"deepseekKeyConfigured":deepseek_key_configured,"cloudProcessing":cloud_processing,"cloudSessionId":cloud_session_id,"defaultExecutable":defaults["executable"],"defaultModelPath":defaults["modelPath"],"defaultMmprojPath":defaults["mmprojPath"],"dataDirectory":self.root,"systemAudioAvailable":self.helper().is_file(),"defaults":defaults});
+            return json!({"platform":std::env::consts::OS,"modelInstalled":model_files_present(&settings),"localModelInstalled":local_model_installed,"modelDownload":model_download,"modelReady":false,"modelState":"error","modelError":WHISPER_REALTIME_UNAVAILABLE,"cloudKeyConfigured":cloud_key_configured,"cloudKeys":cloud_keys,"deepseekKeyConfigured":deepseek_key_configured,"cloudProcessing":cloud_processing,"cloudSessionId":cloud_session_id,"defaultExecutable":defaults["executable"],"defaultModelPath":defaults["modelPath"],"defaultMmprojPath":defaults["mmprojPath"],"dataDirectory":self.root,"systemAudioAvailable":self.helper().is_file(),"defaults":defaults});
         }
-        if settings["engine"] == "soniox" {
+        if selected_provider.is_some() {
             let ready = settings["cloudConsent"] == true && cloud_key_configured;
-            return json!({"platform":std::env::consts::OS,"modelInstalled":true,"localModelInstalled":local_model_installed,"modelDownload":model_download,"modelReady":ready,"modelState":if ready {"ready"} else {"unloaded"},"modelError":Value::Null,"cloudKeyConfigured":cloud_key_configured,"deepseekKeyConfigured":deepseek_key_configured,"cloudProcessing":cloud_processing,"cloudSessionId":cloud_session_id,"defaultExecutable":defaults["executable"],"defaultModelPath":defaults["modelPath"],"defaultMmprojPath":defaults["mmprojPath"],"dataDirectory":self.root,"systemAudioAvailable":self.helper().is_file(),"defaults":defaults});
+            return json!({"platform":std::env::consts::OS,"modelInstalled":true,"localModelInstalled":local_model_installed,"modelDownload":model_download,"modelReady":ready,"modelState":if ready {"ready"} else {"unloaded"},"modelError":Value::Null,"cloudKeyConfigured":cloud_key_configured,"cloudKeys":cloud_keys,"deepseekKeyConfigured":deepseek_key_configured,"cloudProcessing":cloud_processing,"cloudSessionId":cloud_session_id,"defaultExecutable":defaults["executable"],"defaultModelPath":defaults["modelPath"],"defaultMmprojPath":defaults["mmprojPath"],"dataDirectory":self.root,"systemAudioAvailable":self.helper().is_file(),"defaults":defaults});
         }
         let installed = model_files_present(&settings);
         let status = self.checked_model_status(&settings);
         let current = same_model_settings(&status["settings"], &settings);
         let ready = current && status["state"] == "ready";
-        json!({"platform":std::env::consts::OS,"modelInstalled":installed,"localModelInstalled":local_model_installed,"modelDownload":model_download,"modelReady":ready,"modelState":if current {status["state"].clone()} else {json!(if installed {"loading"} else {"unloaded"})},"modelError":if current {status["error"].clone()} else {Value::Null},"cloudKeyConfigured":cloud_key_configured,"deepseekKeyConfigured":deepseek_key_configured,"cloudProcessing":cloud_processing,"cloudSessionId":cloud_session_id,"defaultExecutable":defaults["executable"],"defaultModelPath":defaults["modelPath"],"defaultMmprojPath":defaults["mmprojPath"],"dataDirectory":self.root,"systemAudioAvailable":self.helper().is_file(),"defaults":defaults})
+        json!({"platform":std::env::consts::OS,"modelInstalled":installed,"localModelInstalled":local_model_installed,"modelDownload":model_download,"modelReady":ready,"modelState":if current {status["state"].clone()} else {json!(if installed {"loading"} else {"unloaded"})},"modelError":if current {status["error"].clone()} else {Value::Null},"cloudKeyConfigured":cloud_key_configured,"cloudKeys":cloud_keys,"deepseekKeyConfigured":deepseek_key_configured,"cloudProcessing":cloud_processing,"cloudSessionId":cloud_session_id,"defaultExecutable":defaults["executable"],"defaultModelPath":defaults["modelPath"],"defaultMmprojPath":defaults["mmprojPath"],"dataDirectory":self.root,"systemAudioAvailable":self.helper().is_file(),"defaults":defaults})
     }
     fn checked_model_status(&self, settings: &Value) -> Value {
         let mut status = self.model_status.lock().unwrap();
@@ -1290,26 +1306,45 @@ impl Runtime {
             }
         });
     }
-    fn soniox_configuration(&self, sid: &str) -> Result<(String, String, Vec<String>), String> {
+    /// The selected cloud service with everything needed to connect for this course.
+    fn cloud_configuration(&self, sid: &str) -> Result<(Provider, crate::cloud::Config), String> {
         let state = self.value()?;
         let settings = effective_session_settings(&state, sid);
+        let provider = settings["engine"]
+            .as_str()
+            .and_then(Provider::from_engine)
+            .ok_or("当前没有选择云端识别服务")?;
+        let name = provider.name();
         if settings["cloudConsent"] != true {
-            return Err("请先同意将音频发送到 Soniox 云端".into());
+            return Err(format!("请先同意将音频发送到 {name} 云端"));
         }
         let key = self
-            .soniox_key
+            .cloud_keys
             .lock()
-            .map_err(|_| "Soniox 密钥不可用")?
-            .clone()
+            .map_err(|_| "云端密钥不可用")?
+            .get(&provider)
+            .cloned()
             .filter(|key| !key.is_empty())
-            .ok_or("请先输入 Soniox API 密钥")?;
+            .ok_or_else(|| format!("请先在设置里填写 {name} 的 API Key"))?;
         let language = match settings["language"].as_str().unwrap_or("auto") {
             "en" => "en".to_owned(),
             "zh" => "zh".to_owned(),
             "auto" | "" => "auto".to_owned(),
-            _ => return Err("Soniox 识别语言设置无效".into()),
+            _ => return Err(format!("{name} 识别语言设置无效")),
         };
-        Ok((key, language, vocabulary_terms(&settings)))
+        Ok((
+            provider,
+            crate::cloud::Config {
+                key,
+                language,
+                terms: vocabulary_terms(&settings),
+                region: settings["cloudRegion"].as_str().unwrap_or("").to_owned(),
+            },
+        ))
+    }
+    fn cloud_connect(&self, sid: &str) -> Result<Box<dyn CloudStream>, String> {
+        let (provider, config) = self.cloud_configuration(sid)?;
+        crate::cloud::connect(provider, &config)
     }
     fn add_run(&self, sid: &str, source: &str) -> Result<String, String> {
         id(sid)?;
@@ -1330,23 +1365,24 @@ impl Runtime {
             .or_else(|| Some("qwen".into())))
     }
     fn job_is_cloud(&self, job: &Job) -> Result<bool, String> {
-        Ok(self.run_engine(&job.session, &job.run)?.as_deref() == Some("soniox"))
+        Ok(self
+            .run_engine(&job.session, &job.run)?
+            .as_deref()
+            .is_some_and(crate::cloud::is_cloud_engine))
     }
     fn cloud_upload_allowed(&self, epoch: u64) -> Result<(), String> {
         let state = self.value()?;
         if state["workerEpoch"].as_u64().unwrap_or(0) != epoch {
             return Err("STALE_WORKER_EPOCH".into());
         }
-        if state["settings"]["engine"] != "soniox"
-            || state["settings"]["cloudConsent"] != true
-            || self
-                .soniox_key
+        let provider = state["settings"]["engine"].as_str().and_then(Provider::from_engine);
+        let keyed = provider.is_some_and(|provider| {
+            self.cloud_keys
                 .lock()
-                .map_err(|_| "Soniox 密钥不可用")?
-                .as_ref()
-                .is_none_or(String::is_empty)
-        {
-            return Err("Soniox 云端转写授权已关闭".into());
+                .is_ok_and(|keys| keys.get(&provider).is_some_and(|key| !key.is_empty()))
+        });
+        if !keyed || state["settings"]["cloudConsent"] != true {
+            return Err("云端转写授权已关闭".into());
         }
         Ok(())
     }
@@ -1366,14 +1402,14 @@ impl Runtime {
         self: &Arc<Self>,
         sid: String,
         rid: String,
-        client: crate::soniox::Client,
+        client: Box<dyn CloudStream>,
     ) -> Result<(), String> {
         let mut slot = self.cloud.lock().map_err(|_| "云端转写控制器不可用")?;
         if self.model_installing.load(Ordering::SeqCst) {
-            return Err("本地模型正在安装，请完成后再开始 Soniox 转写".into());
+            return Err("本地模型正在安装，请完成后再开始云端转写".into());
         }
         if slot.is_some() {
-            return Err("另一项 Soniox 转写正在进行，请稍后再试".into());
+            return Err("另一项云端转写正在进行，请稍后再试".into());
         }
         let epoch = self.snapshot()?.worker_epoch;
         let stop = Arc::new(AtomicBool::new(false));
@@ -1384,8 +1420,7 @@ impl Runtime {
             let Some(runtime) = weak.upgrade() else {
                 return;
             };
-            let resume = runtime.cloud_resume(&sid, &rid).unwrap_or_default();
-            let result = cloud_run(&runtime, &sid, &rid, client, resume, epoch, &cancel);
+            let result = runtime.cloud_run_reconnecting(&sid, &rid, Some(client), epoch, &cancel);
             runtime.finish_cloud_attempt(&sid, &rid, result);
         });
         *slot = Some(CloudTask {
@@ -1402,10 +1437,10 @@ impl Runtime {
         self.reap_cloud();
         let mut slot = self.cloud.lock().map_err(|_| "云端转写控制器不可用")?;
         if self.model_installing.load(Ordering::SeqCst) {
-            return Err("本地模型正在安装，请完成后再开始 Soniox 转写".into());
+            return Err("本地模型正在安装，请完成后再开始云端转写".into());
         }
         if slot.is_some() {
-            return Err("另一项 Soniox 转写正在进行，请稍后再试".into());
+            return Err("另一项云端转写正在进行，请稍后再试".into());
         }
         prepare()?;
         let epoch = self.snapshot()?.worker_epoch;
@@ -1486,6 +1521,66 @@ impl Runtime {
             ordinal: next_ordinal,
         })
     }
+    /// Streams a run to the selected cloud service, reconnecting after a dropped link or a
+    /// provider's session time limit. Each new connection resumes at the last finished sentence,
+    /// so an unfinished one is sent again rather than lost.
+    fn cloud_run_reconnecting(
+        &self,
+        sid: &str,
+        rid: &str,
+        first: Option<Box<dyn CloudStream>>,
+        epoch: u64,
+        cancel: &AtomicBool,
+    ) -> Result<(), String> {
+        self.cloud_run_reconnecting_with(sid, rid, first, epoch, cancel, || self.cloud_connect(sid))
+    }
+    fn cloud_run_reconnecting_with(
+        &self,
+        sid: &str,
+        rid: &str,
+        mut first: Option<Box<dyn CloudStream>>,
+        epoch: u64,
+        cancel: &AtomicBool,
+        mut connect: impl FnMut() -> Result<Box<dyn CloudStream>, String>,
+    ) -> Result<(), String> {
+        const MAX_ATTEMPTS: u32 = 6;
+        let mut failures = 0u32;
+        loop {
+            let started = Instant::now();
+            let attempt = match first.take() {
+                Some(client) => Ok(client),
+                None => connect(),
+            }
+            .and_then(|client| {
+                let resume = self.cloud_resume(sid, rid)?;
+                cloud_run(self, sid, rid, client, resume, epoch, cancel)
+            });
+            let error = match attempt {
+                Ok(()) => return Ok(()),
+                Err(error) if crate::cloud::is_transient(&error) => error,
+                Err(error) => return Err(error),
+            };
+            // A connection that ran for a while (a provider's session limit) starts a fresh count.
+            if started.elapsed() > Duration::from_secs(60) {
+                failures = 0;
+            }
+            failures += 1;
+            if failures > MAX_ATTEMPTS {
+                return Err(error);
+            }
+            let wait = Duration::from_secs(1u64 << (failures - 1).min(4));
+            let deadline = Instant::now() + wait;
+            while Instant::now() < deadline {
+                if self.exit.load(Ordering::Relaxed) {
+                    return Err("RUNTIME_SHUTDOWN".into());
+                }
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("CLOUD_PAUSED".into());
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
     fn finish_cloud_attempt(&self, sid: &str, rid: &str, result: Result<(), String>) {
         match result {
             Ok(()) => {
@@ -1550,10 +1645,7 @@ impl Runtime {
                 return Err("CLOUD_PAUSED".into());
             }
             self.cloud_upload_allowed(epoch)?;
-            let (key, language, terms) = self.soniox_configuration(sid)?;
-            let client = crate::soniox::Client::connect(&key, &language, &terms)?;
-            let resume = self.cloud_resume(sid, &rid)?;
-            let result = cloud_run(self, sid, &rid, client, resume, epoch, cancel);
+            let result = self.cloud_run_reconnecting(sid, &rid, None, epoch, cancel);
             let failed = result.as_ref().err().cloned();
             self.finish_cloud_attempt(sid, &rid, result);
             if let Some(error) = failed {
@@ -1593,17 +1685,16 @@ impl Runtime {
         }
         self.reap_cloud();
         let settings = self.value()?["settings"].clone();
-        let cloud_client = if settings["engine"] == "soniox" {
+        let cloud_client = if settings["engine"].as_str().is_some_and(crate::cloud::is_cloud_engine) {
             if self
                 .cloud
                 .lock()
                 .map_err(|_| "云端转写控制器不可用")?
                 .is_some()
             {
-                return Err("另一项 Soniox 转写正在进行，请稍后再试".into());
+                return Err("另一项云端转写正在进行，请稍后再试".into());
             }
-            let (key, language, terms) = self.soniox_configuration(sid)?;
-            Some(crate::soniox::Client::connect(&key, &language, &terms)?)
+            Some(self.cloud_connect(sid)?)
         } else {
             if settings["engine"] == "whisper" {
                 return Err(WHISPER_REALTIME_UNAVAILABLE.into());
@@ -1886,12 +1977,16 @@ impl Runtime {
         match result {
             Ok(samples) => {
                 self.close_run(sid, &rid, samples, "closed", None)?;
-                if self.run_engine(sid, &rid)?.as_deref() == Some("soniox") {
+                if self
+                    .run_engine(sid, &rid)?
+                    .as_deref()
+                    .is_some_and(crate::cloud::is_cloud_engine)
+                {
                     self.update(sid, |session| {
                         session["inferenceState"] = json!("catching_up");
                         Ok(())
                     })?;
-                    self.soniox_configuration(sid)?;
+                    self.cloud_configuration(sid)?;
                     self.spawn_cloud_retry(sid.to_owned())?;
                 }
                 Ok(())
@@ -2248,7 +2343,7 @@ fn cloud_run<C: CloudStream>(
             .as_array()
             .and_then(|runs| runs.iter().find(|run| run["id"] == rid))
             .ok_or("录音不存在")?;
-        if run["engine"] != "soniox" {
+        if !run["engine"].as_str().is_some_and(crate::cloud::is_cloud_engine) {
             return Err("录音的识别引擎不匹配".into());
         }
         let boundary = run["samples"].as_u64().unwrap_or(0);
@@ -2274,7 +2369,10 @@ fn cloud_run<C: CloudStream>(
             runtime.cloud_upload_allowed(epoch)?;
             client.send_audio(&bytes)?;
             cursor += count;
-            next_send = Some(Instant::now() + Duration::from_secs_f64(count as f64 / 16000.0));
+            // Real-time pace, or twice that while catching up after a reconnect, so a resumed
+            // stream does not stay behind the lecture for the rest of the session.
+            let pace = if boundary - cursor > 16000 { 2.0 } else { 1.0 };
+            next_send = Some(Instant::now() + Duration::from_secs_f64(count as f64 / 16000.0 / pace));
             for update in client.poll()? {
                 commit_cloud_update(runtime, sid, rid, &resume, update, epoch)?;
             }
@@ -2304,7 +2402,7 @@ fn cloud_run<C: CloudStream>(
         }
     }
     if !client.finished() {
-        return Err("Soniox 最终结果等待超时；音频已保留，可稍后重试".into());
+        return Err("云端最终结果等待超时；音频已保留，可稍后重试".into());
     }
     Ok(())
 }
@@ -2313,7 +2411,7 @@ fn commit_cloud_update(
     sid: &str,
     rid: &str,
     resume: &CloudResume,
-    update: crate::soniox::Update,
+    update: crate::cloud::Update,
     epoch: u64,
 ) -> Result<(), String> {
     if runtime.snapshot()?.worker_epoch != epoch {
@@ -2328,7 +2426,7 @@ fn commit_cloud_update(
     let ordinal = resume
         .ordinal
         .checked_add(update.index)
-        .ok_or("Soniox 片段编号溢出")?;
+        .ok_or("云端片段编号溢出")?;
     let segment_id = format!("{rid}_cloud_{ordinal}");
     let existing = session["segments"]
         .as_array()
@@ -3506,7 +3604,7 @@ fn worker_loop(weak: Weak<Runtime>) {
                     "settings":settings,
                     "error":WHISPER_REALTIME_UNAVAILABLE
                 });
-            } else if settings["engine"] == "soniox" {
+            } else if settings["engine"].as_str().is_some_and(crate::cloud::is_cloud_engine) {
                 *runtime.model_status.lock().unwrap() =
                     json!({"state":"unloaded","settings":settings});
             } else if model_files_present(&settings) {
@@ -3533,7 +3631,7 @@ fn worker_loop(weak: Weak<Runtime>) {
                     json!({"state":"unloaded","settings":settings});
             }
         }
-        if settings["engine"] == "soniox" {
+        if settings["engine"].as_str().is_some_and(crate::cloud::is_cloud_engine) {
             drop(runtime);
             thread::sleep(Duration::from_millis(150));
             continue;
@@ -3927,7 +4025,7 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
             local_model_verification: Arc::new(Mutex::new(Vec::new())),
             prepare_requested: AtomicBool::new(false),
             persist_credentials: false,
-            soniox_key: Mutex::new(None),
+            cloud_keys: Mutex::new(HashMap::new()),
             deepseek_credential: Arc::new(Mutex::new(DeepSeekCredential::default())),
             auto_polish_scheduled: Arc::new(Mutex::new(HashSet::new())),
             auto_polish_status: Arc::new(Mutex::new(json!({"state":"idle"}))),
@@ -3992,6 +4090,99 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
             self.finished
         }
     }
+    /// Plays a cloud service that sends finished sentences at set points in the audio and, if
+    /// asked, drops the connection part-way through.
+    struct ScriptedCloud {
+        sent: u64,
+        drop_after: Option<u64>,
+        sentences: Vec<(u64, Update)>,
+        finishing: bool,
+        finished: bool,
+    }
+    impl CloudStream for ScriptedCloud {
+        fn send_audio(&mut self, bytes: &[u8]) -> Result<(), String> {
+            self.sent += (bytes.len() / 2) as u64;
+            Ok(())
+        }
+        fn finish_input(&mut self) -> Result<(), String> {
+            self.finishing = true;
+            Ok(())
+        }
+        fn poll(&mut self) -> Result<Vec<Update>, String> {
+            if self.drop_after.is_some_and(|limit| self.sent >= limit) {
+                return Err(crate::cloud::transient(Provider::Doubao, "测试断线"));
+            }
+            let due = self.sentences.iter().take_while(|(at, _)| self.finishing || self.sent >= *at).count();
+            let updates = self.sentences.drain(..due).map(|(_, update)| update).collect();
+            if self.finishing && self.sentences.is_empty() {
+                self.finished = true;
+            }
+            Ok(updates)
+        }
+        fn finished(&self) -> bool {
+            self.finished
+        }
+    }
+    #[test]
+    fn a_dropped_cloud_connection_resumes_after_the_last_finished_sentence() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let sid = session(&runtime, "reconnect");
+        select_soniox(&runtime, true);
+        runtime.dispatch(json!({"type":"configureSoniox","apiKey":"memory-only"})).unwrap();
+        let rid = runtime.add_run(&sid, "import").unwrap();
+        let path = runtime.run_path(&sid, &rid).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, vec![0u8; 64_000 * 2]).unwrap();
+        runtime
+            .update(&sid, |value| {
+                let run = value["runs"].as_array_mut().unwrap().last_mut().unwrap();
+                run["samples"] = json!(64_000);
+                run["state"] = json!("closed");
+                Ok(())
+            })
+            .unwrap();
+        let sentence = |index, start, end, text: &str| Update { index, start_sample: start, end_sample: end, text: text.into(), final_result: true };
+        // First connection: one sentence, then the link drops mid-way through the second.
+        let first = ScriptedCloud { sent: 0, drop_after: Some(28_800), sentences: vec![(19_200, sentence(0, 0, 16_000, "第一句。"))], finishing: false, finished: false };
+        let mut connections = 0;
+        let epoch = runtime.snapshot().unwrap().worker_epoch;
+        runtime
+            .cloud_run_reconnecting_with(&sid, &rid, Some(Box::new(first)), epoch, &AtomicBool::new(false), || {
+                connections += 1;
+                // Positions are relative to where the new connection starts: the end of 第一句.
+                Ok(Box::new(ScriptedCloud { sent: 0, drop_after: None, sentences: vec![(16_000, sentence(0, 0, 16_000, "第二句。")), (48_000, sentence(1, 16_000, 48_000, "第三句。"))], finishing: false, finished: false }))
+            })
+            .unwrap();
+        assert_eq!(connections, 1);
+        let segments = runtime.session(&sid).unwrap()["segments"].as_array().unwrap().clone();
+        let found: Vec<(String, u64, u64, String)> = segments
+            .iter()
+            .map(|s| (s["id"].as_str().unwrap().to_owned(), s["startSample"].as_u64().unwrap(), s["endSample"].as_u64().unwrap(), s["machineText"].as_str().unwrap().to_owned()))
+            .collect();
+        assert_eq!(found, vec![
+            (format!("{rid}_cloud_0"), 0, 16_000, "第一句。".to_owned()),
+            (format!("{rid}_cloud_1"), 16_000, 32_000, "第二句。".to_owned()),
+            (format!("{rid}_cloud_2"), 32_000, 64_000, "第三句。".to_owned()),
+        ]);
+        assert!(segments.iter().all(|s| s["final"] == true));
+    }
+    #[test]
+    fn a_refused_key_is_not_retried() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let sid = session(&runtime, "refused");
+        let rid = runtime.add_run(&sid, "import").unwrap();
+        let mut attempts = 0;
+        let error = runtime
+            .cloud_run_reconnecting_with(&sid, &rid, None, 0, &AtomicBool::new(false), || {
+                attempts += 1;
+                Err(crate::cloud::handshake_refusal(Provider::Bailian, 401, "InvalidApiKey"))
+            })
+            .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert!(error.contains("API Key"));
+    }
     #[test]
     fn soniox_readiness_requires_consent_and_keeps_key_out_of_course_data() {
         let temp = tempfile::tempdir().unwrap();
@@ -4001,7 +4192,7 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
         assert_eq!(runtime.info()["modelInstalled"], true);
         assert_eq!(runtime.info()["modelReady"], false);
         assert!(runtime
-            .soniox_configuration(&sid)
+            .cloud_configuration(&sid)
             .unwrap_err()
             .contains("同意"));
         let secret = "soniox-test-secret-48291";
@@ -4146,6 +4337,30 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
         assert_eq!(runtime.info()["cloudKeyConfigured"], false);
         let task = runtime.cloud.lock().unwrap().take().unwrap();
         task.thread.join().unwrap();
+    }
+    #[test]
+    fn removing_another_services_key_leaves_the_running_cloud_task_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        runtime.dispatch(json!({"type":"configureCloudKey","provider":"doubao","apiKey":"volc-key"})).unwrap();
+        runtime.dispatch(json!({"type":"configureCloudKey","provider":"soniox","apiKey":"old-key"})).unwrap();
+        let mut settings = runtime.snapshot().unwrap().settings;
+        settings.engine = "doubao".into();
+        settings.cloud_consent = true;
+        runtime.dispatch(json!({"type":"settings","commandId":uid(),"settings":settings})).unwrap();
+        assert_eq!(runtime.info()["cloudKeys"], json!({"soniox":true,"doubao":true,"bailian":false,"elevenlabs":false}));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread = thread::spawn(move || while !thread_stop.load(Ordering::SeqCst) { thread::sleep(Duration::from_millis(5)); });
+        *runtime.cloud.lock().unwrap() = Some(CloudTask { session: "s".into(), stop: stop.clone(), thread });
+        runtime.dispatch(json!({"type":"configureCloudKey","provider":"soniox","apiKey":""})).unwrap();
+        assert!(!stop.load(Ordering::SeqCst));
+        assert_eq!(runtime.info()["cloudKeyConfigured"], true);
+        runtime.dispatch(json!({"type":"configureCloudKey","provider":"doubao","apiKey":""})).unwrap();
+        assert!(stop.load(Ordering::SeqCst));
+        runtime.cloud.lock().unwrap().take().unwrap().thread.join().unwrap();
+        assert!(runtime.dispatch(json!({"type":"configureCloudKey","provider":"doubao","apiKey":"has space"})).is_err());
+        assert!(runtime.dispatch(json!({"type":"configureCloudKey","provider":"nope","apiKey":"k"})).is_err());
     }
     #[test]
     fn run_engine_pins_worker_routing() {
@@ -4767,7 +4982,7 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
 
         let result = runtime.dispatch(json!({"type":"installModel","commandId":uid()}));
 
-        assert!(result.unwrap_err().contains("Soniox 转写正在进行"));
+        assert!(result.unwrap_err().contains("云端转写正在进行"));
         assert!(!runtime.model_installing.load(Ordering::SeqCst));
         assert_eq!(runtime.info()["modelDownload"]["phase"], "idle");
         let task = runtime.cloud.lock().unwrap().take().unwrap();

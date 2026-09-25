@@ -30,7 +30,7 @@ const steps = (): Step[] => [
   { icon: <Pencil size={30} strokeWidth={1.6} />, title: '听错了，当场改', body: <>点一下任何一句，选<b>修订</b>；或者按快捷键修订选中的那句（没选中时改最新一句）。你修改时，新内容照常转写。</>, keys: [shortcutLabel('E')] },
   { icon: <StickyNote size={30} strokeWidth={1.6} />, title: '在讲到的地方记笔记', body: <>点一句后选<b>笔记</b>，可以补充文字、例子、LaTeX 公式，或直接粘贴课件截图。笔记会留在对应的位置，和录音时间对应。</> },
   { icon: <Search size={30} strokeWidth={1.6} />, title: '课后搜索与回放', body: <>搜索所有课堂的转写和笔记，结果可以直接定位到原文。点句子旁的<b>回放</b>，就能复听老师当时怎么说。</>, keys: [shortcutLabel('K')] },
-  { icon: <ShieldCheck size={30} strokeWidth={1.6} />, title: '导出，也放心', body: <>从<b>导出</b>菜单保存为 PDF、Markdown、网页或课程包。录音和转写默认只留在本机；DeepSeek、Soniox 等云端功能要你在设置里主动开启才会使用。</> },
+  { icon: <ShieldCheck size={30} strokeWidth={1.6} />, title: '导出，也放心', body: <>从<b>导出</b>菜单保存为 PDF、Markdown、网页或课程包。录音和转写默认只留在本机；豆包、百炼、DeepSeek 等云端功能要你在设置里主动开启才会使用。</> },
 ];
 
 export function Onboarding({ onClose }: { onClose: () => void }) {

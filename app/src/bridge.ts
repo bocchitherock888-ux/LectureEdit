@@ -24,6 +24,7 @@ const nativeAdapter: LectureAdapter = {
   mode: 'native',
   dispatch: (command: DomainCommand) => syncState(command),
   runtimeInfo: () => invoke<RuntimeInfo>('runtime_info'),
+  openHelpLink: (id) => invoke<void>('open_help_link', { id }),
   startRecording: (sessionId, source) => syncState({ type: 'startRecording', commandId: crypto.randomUUID(), sessionId, source }),
   pauseRecording: (sessionId) => syncState({ type: 'pauseRecording', commandId: crypto.randomUUID(), sessionId }),
   stopRecording: (sessionId) => syncState({ type: 'stopRecording', commandId: crypto.randomUUID(), sessionId }),

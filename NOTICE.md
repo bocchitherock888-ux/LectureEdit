@@ -8,4 +8,8 @@
 
 Windows 安装包在 `native/qwen/` 中随附 Microsoft Visual C++ 运行库（`vcruntime140*.dll`、`msvcp140*.dll` 等），取自 Visual Studio 2022 的可再发行组件目录，按 Microsoft Visual C++ 可再发行组件的许可条款分发。
 
-云端转写（Soniox）与可选的 DeepSeek 功能需要你自己的 API 密钥。密钥只保存在本机运行中的应用进程里，不会进入本仓库。
+云端转写（豆包语音、阿里云百炼、ElevenLabs、Soniox）与可选的 DeepSeek 功能需要你自己的 API 密钥。密钥保存在本机的系统钥匙串（Windows 为凭据管理器）中，不会进入本仓库、课程文件或导出内容。
+
+## 云端服务标识
+
+设置界面在云端识别服务的选项旁显示各家的标识，用于区分服务。这些标识是其所有者的商标：豆包（字节跳动 / 火山引擎）、阿里云百炼（阿里云）、ElevenLabs 和 Soniox。豆包、阿里云百炼、ElevenLabs 的矢量图取自 [LobeHub Icons](https://github.com/lobehub/lobe-icons)（MIT 许可），Soniox 图标取自 soniox.com。

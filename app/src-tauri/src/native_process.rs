@@ -68,7 +68,14 @@ mod job {
 /// The CPU run keeps the model and the audio encoder off every GPU backend.
 pub(crate) const fn qwen_device_args(gpu: bool) -> &'static [&'static str] {
     if gpu {
-        &["-ngl", "99"]
+        // Windows GPU backends share memory with the CPU on integrated graphics. Mapping the model
+        // file straight into such a buffer failed llama.cpp's 32-byte alignment check under Vulkan,
+        // so the weights are read in and uploaded instead.
+        if cfg!(windows) {
+            &["-ngl", "99", "--no-mmap"]
+        } else {
+            &["-ngl", "99"]
+        }
     } else {
         &["-ngl", "0", "-dev", "none", "--no-mmproj-offload"]
     }
@@ -98,7 +105,8 @@ mod tests {
 
     #[test]
     fn cpu_fallback_keeps_every_part_of_the_model_off_the_gpu() {
-        assert_eq!(qwen_device_args(true), ["-ngl", "99"]);
+        assert_eq!(&qwen_device_args(true)[..2], ["-ngl", "99"]);
+        assert_eq!(qwen_device_args(true).contains(&"--no-mmap"), cfg!(windows));
         let cpu = qwen_device_args(false);
         assert!(cpu.windows(2).any(|pair| pair == ["-ngl", "0"]));
         assert!(cpu.windows(2).any(|pair| pair == ["-dev", "none"]));

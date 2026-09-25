@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { CircleAlert, Cloud, FolderOpen, HardDrive, KeyRound, Monitor, Moon, Sun, TextQuote, X } from 'lucide-react';
+import { Check, CircleAlert, Cloud, ExternalLink, FolderOpen, HardDrive, KeyRound, Monitor, Moon, Sun, TextQuote, X } from 'lucide-react';
 import { adapter } from './bridge';
 import { DeepSeekConnection } from './DeepSeekTools';
 import type { Project, RuntimeInfo, Session, Settings } from './types';
+import { CLOUD_PROVIDERS, cloudProvider, isCloudEngine, type CloudEngine } from './cloudProviders';
+import { ProviderMark } from './ProviderMark';
 import './settings.css';
 
 export type SettingsDialogProps = {
@@ -11,7 +13,7 @@ export type SettingsDialogProps = {
   session: Session | null;
   project: Project | null;
   runtime: RuntimeInfo;
-  initialEngine?: 'qwen' | 'soniox';
+  initialEngine?: 'qwen' | CloudEngine;
   onSave: (value: Settings, vocabulary: { projectVocabulary: string[]; sessionVocabulary: string[] }) => Promise<boolean>;
   onPick: (key: 'executable' | 'modelPath' | 'mmprojPath') => Promise<string | null>;
   onInstall: () => Promise<boolean>;
@@ -33,15 +35,25 @@ export function SettingsDialog({ onShowGuide, settings, session, project, runtim
   const [apiKey, setApiKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [keyConfigured, setKeyConfigured] = useState(Boolean(runtime.cloudKeyConfigured));
+  // Saved keys by service. Older runtimes only report the Soniox key as cloudKeyConfigured.
+  const reportedKeys = (): Partial<Record<CloudEngine, boolean>> => runtime.cloudKeys ?? { soniox: Boolean(runtime.cloudKeyConfigured) };
+  const [savedKeys, setSavedKeys] = useState(reportedKeys);
   const [deepseekConfigured, setDeepseekConfigured] = useState(Boolean(runtime.deepseekKeyConfigured));
   const seenStored = useRef(storedFields(settings));
   const panel = useRef<HTMLElement>(null);
-  const cloud = value.engine === 'soniox';
+  const cloud = isCloudEngine(value.engine);
+  const provider = cloudProvider(value.engine) ?? CLOUD_PROVIDERS[0];
+  const keyConfigured = Boolean(savedKeys[provider.engine]);
+  const lastCloud = useRef<CloudEngine>(isCloudEngine(settings.engine) ? settings.engine : CLOUD_PROVIDERS.find((item) => reportedKeys()[item.engine])?.engine ?? 'doubao');
+  const chooseCloud = (engine: CloudEngine) => {
+    lastCloud.current = engine;
+    setApiKey(''); setError('');
+    setValue((current) => ({ ...current, engine, cloudRegion: engine === 'bailian' ? current.cloudRegion || 'beijing' : current.cloudRegion }));
+  };
   const download = runtime.modelDownload;
   const downloading = installState === 'downloading' || download?.phase === 'downloading' || download?.phase === 'verifying';
   const downloadPercent = download?.totalBytes ? Math.min(100, Math.round(download.downloadedBytes / download.totalBytes * 100)) : 0;
-  useEffect(() => setKeyConfigured(Boolean(runtime.cloudKeyConfigured)), [runtime.cloudKeyConfigured]);
+  useEffect(() => setSavedKeys(reportedKeys()), [JSON.stringify(runtime.cloudKeys), runtime.cloudKeyConfigured]);
   useEffect(() => setDeepseekConfigured(Boolean(runtime.deepseekKeyConfigured)), [runtime.deepseekKeyConfigured]);
   useEffect(() => {
     const next = storedFields(settings);
@@ -74,7 +86,7 @@ export function SettingsDialog({ onShowGuide, settings, session, project, runtim
       <button onClick={async () => { const path = await onPick(key); if (path) setValue((current) => ({ ...current, [key]: path })); }} aria-label={`选择${label}`}><FolderOpen size={16} /></button>
     </div></label>
   );
-  const installed = runtime.localModelInstalled ?? (settings.engine !== 'soniox' && (runtime.modelInstalled ?? runtime.modelReady ?? false));
+  const installed = runtime.localModelInstalled ?? (!isCloudEngine(settings.engine) && (runtime.modelInstalled ?? runtime.modelReady ?? false));
   const sameEngine = (['engine', 'executable', 'modelPath', 'mmprojPath', 'language'] as const).every((key) => value[key] === settings[key]);
   const modelState = prepareState === 'loading' ? 'loading' : runtime.modelState ?? (runtime.modelReady ? 'ready' : 'unloaded');
   const healthTitle = value.engine === 'whisper' ? '请选择实时转写引擎' : !sameEngine ? '保存后准备所选模型' : !installed ? '需要下载本地模型' : modelState === 'ready' ? '本地模型已就绪' : modelState === 'loading' ? '正在加载模型' : modelState === 'error' && modelStoppedRunning(runtime.modelError) ? '本地模型已停止运行' : modelState === 'error' || prepareState === 'error' ? '模型准备失败' : '等待加载模型';
@@ -98,11 +110,13 @@ export function SettingsDialog({ onShowGuide, settings, session, project, runtim
       if (value.autoPolish && !deepseekConfigured) throw new Error('请先保存 DeepSeek API Key，再启用转写轻度整理。');
       if (cloud) {
         if (!value.cloudConsent) throw new Error('请先确认云端音频发送与账户费用。');
-        if (adapter.mode === 'demo') throw new Error('请在桌面应用中配置 Soniox 连接。');
-        if (apiKey.trim()) {
-          await adapter.dispatch({ type: 'configureSoniox', apiKey: apiKey.trim() });
-          setApiKey(''); setKeyConfigured(true);
-        } else if (!keyConfigured) throw new Error('请输入具有实时语音识别权限的 Soniox API Key。');
+        if (adapter.mode === 'demo') throw new Error(`请在桌面应用中配置 ${provider.name} 连接。`);
+        const key = apiKey.trim();
+        if (provider.engine === 'bailian' && key.startsWith('sk-sp-')) throw new Error('这是 Coding Plan / Token Plan 的 Key，按条款不能用于应用程序。请在百炼控制台的「API Key」页面创建普通 Key。');
+        if (key) {
+          await adapter.dispatch({ type: 'configureCloudKey', provider: provider.engine, apiKey: key });
+          setApiKey(''); setSavedKeys((current) => ({ ...current, [provider.engine]: true }));
+        } else if (!keyConfigured) throw new Error(`请填写 ${provider.name} 的 API Key，获取方法见下方说明。`);
       }
       if (!await onSave({ ...value, customVocabulary }, { projectVocabulary: normalizedProjectVocabulary, sessionVocabulary: normalizedSessionVocabulary })) setError('设置保存失败，请检查当前录音或转写状态后重试。');
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
@@ -119,18 +133,33 @@ export function SettingsDialog({ onShowGuide, settings, session, project, runtim
       <div className="settings-section-label">课堂转写</div>
       <div className="engine-choice" role="radiogroup" aria-label="转写方式">
         <label className={cloud ? '' : 'selected'}><input type="radio" name="transcription-engine" value="qwen" checked={value.engine === 'qwen'} disabled={saving || downloading} onChange={() => { setValue({ ...value, engine: 'qwen' }); setError(''); }} /><HardDrive size={18} /><span><strong>本地</strong><small>Qwen3-ASR</small></span></label>
-        <label className={cloud ? 'selected' : ''}><input type="radio" name="transcription-engine" value="soniox" checked={cloud} disabled={saving || downloading} onChange={() => { setValue({ ...value, engine: 'soniox' }); setError(''); }} /><Cloud size={18} /><span><strong>云端</strong><small>Soniox stt-rt-v5</small></span></label>
+        <label className={cloud ? 'selected' : ''}><input type="radio" name="transcription-engine" value="cloud" checked={cloud} disabled={saving || downloading} onChange={() => chooseCloud(lastCloud.current)} /><Cloud size={18} /><span><strong>云端</strong><small>豆包、百炼、ElevenLabs、Soniox</small></span></label>
       </div>
       {cloud ? <>
-        <div className="model-health"><Cloud size={20} /><div><strong>Soniox · stt-rt-v5</strong><span>实时传输音频，持续返回识别文字</span></div></div>
-        <label className="form-field"><span><KeyRound size={14} /> API Key</span><input type="password" autoComplete="off" spellCheck={false} disabled={adapter.mode === 'demo'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={keyConfigured ? '已配置，填写可替换' : '输入 Soniox API Key'} /></label>
-        <p className="settings-help">在 Soniox 控制台创建具有 Speech-to-text, real-time 权限的密钥。密钥安全保存在系统凭据中，重新打开应用后继续可用。</p>
-        {keyConfigured && <button className="text-button" onClick={async () => { try { await adapter.dispatch({ type: 'configureSoniox', apiKey: '' }); setKeyConfigured(false); setApiKey(''); } catch { setError('密钥删除失败，请稍后重试。'); } }}>删除已保存密钥</button>}
-        <label className="cloud-consent"><input type="checkbox" checked={Boolean(value.cloudConsent)} onChange={(event) => setValue({ ...value, cloudConsent: event.target.checked })} /><span>启用 Soniox 云端识别。选择此引擎后，开始录音、导入音频及重试转写会向 Soniox 发送对应音频；使用费用由我的 Soniox 账户承担。</span></label>
-        <p className="settings-help">原始录音仍保存在本机。断网时保留录音，恢复连接后可主动重试转写。</p>
+        <div className="provider-choice" role="radiogroup" aria-label="云端识别服务">
+          {CLOUD_PROVIDERS.map((item) => <label key={item.engine} className={item.engine === provider.engine ? 'selected' : ''}>
+            <input type="radio" name="cloud-provider" value={item.engine} checked={item.engine === provider.engine} disabled={saving} onChange={() => chooseCloud(item.engine)} />
+            <span className="provider-name"><span className="provider-title"><ProviderMark engine={item.engine} size={20} /><strong>{item.name}</strong></span>{savedKeys[item.engine] && <span className="provider-ready"><Check size={11} strokeWidth={2.4} />已配置</span>}</span>
+            <small>{item.model}</small>
+            <small className="provider-price">{item.price}</small>
+          </label>)}
+        </div>
+        <div className="model-health"><ProviderMark engine={provider.engine} size={26} /><div><strong>{provider.name} · {provider.model}</strong><span>{provider.strength}</span></div></div>
+        {provider.regions && <label className="form-field"><span>地域</span><select value={value.cloudRegion || provider.regions[0].value} disabled={saving} onChange={(event) => setValue({ ...value, cloudRegion: event.target.value })}>{provider.regions.map((region) => <option key={region.value} value={region.value}>{region.label}</option>)}</select></label>}
+        <label className="form-field"><span><KeyRound size={14} /> API Key</span><input type="password" autoComplete="off" spellCheck={false} disabled={adapter.mode === 'demo'} value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={keyConfigured ? '已配置，填写可替换' : provider.keyPlaceholder} /></label>
+        <details className="key-guide" open={!keyConfigured}>
+          <summary>如何获取 {provider.name} 的 API Key</summary>
+          <ol>{provider.steps.map((step) => <li key={step}>{step}</li>)}</ol>
+          <div className="key-guide-links">{provider.links.map((link) => <button key={link.id} type="button" className="link-button" onClick={() => void adapter.openHelpLink(link.id, link.url).catch(() => setError(`无法打开浏览器，请手动访问 ${link.url}`))}><ExternalLink size={13} />{link.label}</button>)}</div>
+          {provider.note && <p className="settings-help">{provider.note}</p>}
+        </details>
+        <p className="settings-help">密钥保存在系统钥匙串（Windows 为凭据管理器）中，不会写进课程文件或导出内容。</p>
+        {keyConfigured && <button className="text-button" onClick={async () => { try { await adapter.dispatch({ type: 'configureCloudKey', provider: provider.engine, apiKey: '' }); setSavedKeys((current) => ({ ...current, [provider.engine]: false })); setApiKey(''); } catch { setError('密钥删除失败，请稍后重试。'); } }}>删除已保存的 {provider.name} 密钥</button>}
+        <label className="cloud-consent"><input type="checkbox" checked={Boolean(value.cloudConsent)} onChange={(event) => setValue({ ...value, cloudConsent: event.target.checked })} /><span>启用 {provider.name} 云端识别。选择此服务后，开始录音、导入音频及重试转写会把对应音频发送给 {provider.name}；使用费用由我自己的账户承担。</span></label>
+        <p className="settings-help">原始录音仍保存在本机。网络中断时会自动重连，从上一句接着转写；断网期间录音照常保存。</p>
         {adapter.mode === 'demo' && <p className="settings-help">浏览器演示展示设置界面；请在桌面应用中建立连接。</p>}
       </> : <>
-        <div className="model-health"><HardDrive size={20} /><div><strong>{downloading ? download?.phase === 'verifying' ? '正在校验模型' : '正在下载模型' : healthTitle}</strong><span>{value.engine === 'whisper' ? 'Whisper 实时录音尚未启用，请选择 Qwen 或 Soniox。' : 'Qwen3-ASR-0.6B（Q8） · 音频在这台电脑上识别'}</span></div></div>
+        <div className="model-health"><HardDrive size={20} /><div><strong>{downloading ? download?.phase === 'verifying' ? '正在校验模型' : '正在下载模型' : healthTitle}</strong><span>{value.engine === 'whisper' ? 'Whisper 实时录音尚未启用，请选择 Qwen 或云端识别。' : 'Qwen3-ASR-0.6B（Q8） · 音频在这台电脑上识别'}</span></div></div>
         {value.engine === 'qwen' && (!installed || downloading) && <div className="download-model"><div><strong>下载本地模型</strong><span>约 1.02 GB · 下载后可离线使用</span></div><button className="primary-button" disabled={downloading || runtime.cloudProcessing} onClick={async () => { setInstallState('downloading'); const ok = await onInstall(); setInstallState(ok ? 'done' : 'error'); }}>{downloading ? download?.phase === 'verifying' ? '校验中…' : '下载中…' : download?.phase === 'error' ? '继续下载' : '下载模型'}</button>{downloading && <div className="model-download-progress" role="status"><progress max="100" value={downloadPercent} aria-label="本地模型下载进度" /><span>{download?.phase === 'verifying' ? '正在检查文件完整性…' : `${downloadPercent}% · ${Math.round((download?.downloadedBytes ?? 0) / 1_000_000)} / ${Math.round((download?.totalBytes ?? 1_019_141_728) / 1_000_000)} MB`}</span></div>}{(installState === 'error' || download?.phase === 'error') && <p className="inline-error">{download?.error || '下载暂时中断，已下载的部分会保留。请检查网络后继续。'}</p>}</div>}
         <p className="settings-help">安装包只包含应用程序。本地模型按需下载，已下载的模型可重复使用。</p>
         {value.engine !== 'whisper' && sameEngine && installed && modelState !== 'ready' && <div className="prepare-model">{runtime.modelError && <p className="inline-error model-error-detail">{runtime.modelError}</p>}<div><span>{modelStoppedRunning(runtime.modelError) ? '已保存的录音不受影响，重新准备模型后可继续转写。' : '加载完成后即可开始录音。'}</span></div><button className="secondary-button" disabled={modelState === 'loading'} onClick={async () => { setPrepareState('loading'); const ok = await onPrepare(); setPrepareState(ok ? 'idle' : 'error'); }}>{modelState === 'loading' ? '正在准备…' : '准备模型'}</button></div>}

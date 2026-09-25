@@ -978,3 +978,9 @@ html[data-theme="dark"] .note-block p { margin: 6px 0 0; color: var(--ink-2); fo
 .link-button { padding: 0; border: 0; color: var(--accent); background: none; font: inherit; cursor: pointer; }
 .link-button:hover { text-decoration: underline; }
 @media (max-width: 480px) { .onboarding-count, .onboarding h2, .onboarding-body { margin-inline: 24px; } .onboarding footer { padding-inline: 18px; } .onboarding-dots button { width: 14px; } .onboarding-dots button.is-current { width: 22px; } }
+
+/* Engine menu: a mark per engine, then its name and note. */
+.export-menu.engine-menu { width: 244px; }
+.export-menu.engine-menu button { grid-template-columns: 22px minmax(0, 1fr); align-items: center; column-gap: 10px; }
+.engine-local-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: var(--ink-2); background: var(--fill-active); }
+.engine-button .provider-mark { border-radius: 4.5px; box-shadow: none; }

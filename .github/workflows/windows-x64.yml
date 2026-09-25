@@ -69,8 +69,9 @@ jobs:
       # build-native.ps1 reuses these binaries only if their stamp matches the llama.cpp
       # commit and every CMake option; otherwise it rebuilds. The inference test below
       # still loads the packaged runtime and transcribes real speech on every run.
-      - name: Cache compiled llama.cpp runtime
-        uses: actions/cache@v4
+      - name: Restore compiled llama.cpp runtime
+        id: llama-bin
+        uses: actions/cache/restore@v4
         with:
           path: app/.native-build/windows-x64-${{ inputs.cpu_profile || 'multi' }}-msvc/bin/Release
           key: windows-x64-llama-bin-${{ inputs.cpu_profile || 'multi' }}-${{ hashFiles('app/scripts/build-native.ps1', 'app/scripts/windows/Windows-Common.ps1') }}
@@ -98,6 +99,14 @@ jobs:
           OFFLINE_WEBVIEW2: ${{ inputs.offline_webview2 || false }}
         run: |
           ./app/scripts/windows/Build-Windows.ps1 -CpuProfile $env:CPU_PROFILE -Jobs 2 -OfflineWebView2:($env:OFFLINE_WEBVIEW2 -eq 'true')
+      # Saved as soon as it is built, so a failing test later in the job does not throw away a
+      # 30-minute Vulkan compile.
+      - name: Save compiled llama.cpp runtime
+        if: ${{ always() && steps.llama-bin.outputs.cache-hit != 'true' && hashFiles(format('app/.native-build/windows-x64-{0}-msvc/bin/Release/llama-server.exe', inputs.cpu_profile || 'multi')) != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: app/.native-build/windows-x64-${{ inputs.cpu_profile || 'multi' }}-msvc/bin/Release
+          key: ${{ steps.llama-bin.outputs.cache-primary-key }}
       - name: Load the packaged model runtime and transcribe real speech
         run: |
           $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1

@@ -167,6 +167,7 @@ async function dispatch(command: DomainCommand): Promise<AppState> {
 
 export const demoAdapter: LectureAdapter = {
   mode: 'demo', dispatch,
+  openHelpLink: async (_id, url) => { window.open(url, '_blank', 'noopener'); },
   runtimeInfo: async () => ({ platform: '浏览器', modelInstalled: false, modelReady: false, modelState: 'unloaded', modelError: null }),
   startRecording: async (sessionId) => { mutateSession(sessionId, (s) => { if (s.recordingState === 'recording') return; s.recordingState = 'recording'; s.inferenceState = 'running'; s.runs.push({ id: `run-${Date.now()}`, source: 'microphone', startedAt: Date.now(), endedAt: null, samples: 0, offsetMs: s.runs.reduce((sum, run) => sum + run.samples / 16, 0), state: 'recording' }); }); persistPreview(); return clone(state); },
   pauseRecording: async (sessionId) => { mutateSession(sessionId, (s) => { s.recordingState = 'paused'; for (const run of s.runs.filter((item) => item.state === 'recording')) { run.endedAt = Date.now(); run.state = 'closed'; for (const segment of s.segments.filter((item) => item.runId === run.id)) segment.final = true; } }); persistPreview(); return clone(state); },
