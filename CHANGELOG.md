@@ -4,7 +4,7 @@
 
 - Three more cloud speech services, each set up with a single API key: 豆包语音 (Volcano Engine streaming ASR 2.0, about ¥1 an hour), 阿里云百炼 (Qwen-Audio 3.1 real-time, Beijing or Singapore region) and ElevenLabs (Scribe v2 Realtime). Settings show each service's logo and price and how to get its key, with a link to its console. Course vocabulary is sent to the chosen service as hotwords. These follow each provider's current documentation and pass protocol tests against local servers; they have not yet been tried with real accounts
 - A dropped cloud connection, or a service ending a long session, now reconnects on its own and continues from the last finished sentence, catching up at twice real time. A refused key is reported and not retried
-- Windows: the local model runs on the GPU through Vulkan, including Intel and AMD integrated graphics, and falls back to the CPU when there is no Vulkan driver. If the GPU backend fails to start or crashes during a lecture, the app switches to the CPU and remembers it for this version. CI transcribes real speech on the packaged Vulkan backend
+- Windows: an experimental 显卡加速 switch in Settings, off by default, runs the local model on the GPU through Vulkan, including Intel and AMD integrated graphics. Without a Vulkan driver, or if the GPU backend fails to start or crashes during a lecture, the app uses the CPU and remembers that for this version. CI transcribes real speech on the packaged Vulkan backend using Mesa's software device; it has not yet been tried on real graphics hardware, hence off by default
 - Keys for each service are kept separately in the system keychain; removing one service's key no longer stops a lecture running on another
 
 ## 0.1.5 — 2026-09-25

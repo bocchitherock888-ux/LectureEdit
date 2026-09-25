@@ -3009,6 +3009,7 @@ fn same_model_settings(left: &Value, right: &Value) -> bool {
         "mmprojPath",
         "language",
         "customVocabulary",
+        "gpuAcceleration",
     ]
     .iter()
     .all(|key| left[*key] == right[*key])
@@ -3020,6 +3021,10 @@ const MODEL_LOAD_TIMEOUT: &str = "本地模型加载超时，已保存的音频�
 /// Written when the GPU backend failed on this computer. It names the app version, so a later
 /// release (with a newer llama.cpp or driver workarounds) tries the GPU again once.
 const QWEN_CPU_ONLY: &str = "qwen-cpu-only.txt";
+/// macOS always uses Metal. On Windows the Vulkan path is opt-in for now.
+fn wants_gpu(settings: &Value, windows: bool) -> bool {
+    !windows || settings["gpuAcceleration"] == true
+}
 fn gpu_allowed(root: &Path) -> bool {
     fs::read_to_string(root.join(QWEN_CPU_ONLY))
         .map(|marker| marker.lines().next() != Some(env!("CARGO_PKG_VERSION")))
@@ -3078,7 +3083,7 @@ impl Model {
         child: Arc<Mutex<Option<Child>>>,
         exit: &AtomicBool,
     ) -> Result<Self, String> {
-        if settings["engine"] == "whisper" || !gpu_allowed(root) {
+        if settings["engine"] == "whisper" || !wants_gpu(&settings, cfg!(windows)) || !gpu_allowed(root) {
             return Self::load_on(settings, root, child, exit, false).map_err(|(error, _)| error);
         }
         match Self::load_on(settings.clone(), root, child.clone(), exit, true) {
@@ -4382,6 +4387,16 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
         assert_eq!(runtime.info()["modelReady"], true);
         let secret_free = serde_json::to_string(&runtime.snapshot().unwrap()).unwrap();
         assert!(!secret_free.contains("sk-abc"));
+    }
+    #[test]
+    fn windows_uses_the_gpu_only_when_switched_on() {
+        assert!(wants_gpu(&json!({}), false));
+        assert!(!wants_gpu(&json!({}), true));
+        assert!(!wants_gpu(&json!({"gpuAcceleration": false}), true));
+        assert!(wants_gpu(&json!({"gpuAcceleration": true}), true));
+        assert!(!same_model_settings(&json!({"gpuAcceleration": true}), &json!({"gpuAcceleration": false})));
+        let settings: crate::domain::Settings = serde_json::from_value(json!({"engine":"qwen","executable":"","modelPath":"","mmprojPath":"","language":"auto"})).unwrap();
+        assert!(!settings.gpu_acceleration);
     }
     #[test]
     fn run_engine_pins_worker_routing() {

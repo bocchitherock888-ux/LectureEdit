@@ -251,7 +251,7 @@ Get-FileHash .\Suitang_0.1.6_windows-x64_multi_setup.exe -Algorithm SHA256
 
 总下载量约 1.02 GB，来源是输入源码的固定清单；本次没有重新下载权重验证远端内容。首次使用需要完成应用内模型准备；已有文件可在设置中指定。模型安装完毕后，选择本地 Qwen 做断网识别测试。
 
-`multi` 档随附 `ggml-vulkan.dll`：有 Vulkan 驱动的电脑（独立显卡，或 Intel/AMD 核显）用显卡推理，没有驱动时自动用 CPU。应用若发现显卡后端启动失败或中途崩溃，会改用 CPU 并在本版本内记住。CI 在构建机上用 Mesa 的软件 Vulkan 设备实际转写一次，证明打包的显卡后端可用。`baseline` 档只含 CPU，作兼容性对照。macOS 保留 Metal 配置。
+`multi` 档随附 `ggml-vulkan.dll`。在设置中打开「显卡加速（实验）」（默认关闭）后，有 Vulkan 驱动的电脑（独立显卡，或 Intel/AMD 核显）用显卡推理，没有驱动时自动用 CPU。尚未在真实显卡上验收，因此默认关闭。应用若发现显卡后端启动失败或中途崩溃，会改用 CPU 并在本版本内记住。CI 在构建机上用 Mesa 的软件 Vulkan 设备实际转写一次，验证打包的显卡后端算得对；该软件设备的内存映射对齐不合规范，会随机导致 llama.cpp 启动失败，因此 CI 最多重试 5 次启动。显卡模式启动参数为 `-ngl 99 --no-host --fit off`。`baseline` 档只含 CPU，作兼容性对照。macOS 保留 Metal 配置。
 
 **原生精排 PDF 是现有源码的 macOS 专用实现。** 本次在 Windows 清楚标明该限制并禁用对应入口，提供“导出课程阅读 HTML → 在 Edge 打开 → 打印为 PDF”的流程；版式须实际核对。Markdown、HTML、WAV、课程包保留原实现，待 Windows 验收。处理 PDF 功能对齐应单列后续任务，避免与首个 Windows 构建同时改动导出架构。
 

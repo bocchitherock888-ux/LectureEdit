@@ -13,6 +13,8 @@ export interface Settings {
   theme?: 'system' | 'light' | 'dark';
   /** Region of a cloud service that has several (阿里云百炼: beijing or singapore). */
   cloudRegion?: string;
+  /** Windows only: run the local model on the GPU (Vulkan). Experimental, off by default. */
+  gpuAcceleration?: boolean;
 }
 
 export interface Segment {

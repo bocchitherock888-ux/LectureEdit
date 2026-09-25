@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, Cloud, ExternalLink, FolderOpen, HardDrive, KeyRound, Monitor, Moon, Sun, TextQuote, X } from 'lucide-react';
+import { Check, CircleAlert, Cloud, Cpu, ExternalLink, FolderOpen, HardDrive, KeyRound, Monitor, Moon, Sun, TextQuote, X } from 'lucide-react';
 import { adapter } from './bridge';
 import { DeepSeekConnection } from './DeepSeekTools';
 import type { Project, RuntimeInfo, Session, Settings } from './types';
@@ -163,6 +163,11 @@ export function SettingsDialog({ onShowGuide, settings, session, project, runtim
         {value.engine === 'qwen' && (!installed || downloading) && <div className="download-model"><div><strong>下载本地模型</strong><span>约 1.02 GB · 下载后可离线使用</span></div><button className="primary-button" disabled={downloading || runtime.cloudProcessing} onClick={async () => { setInstallState('downloading'); const ok = await onInstall(); setInstallState(ok ? 'done' : 'error'); }}>{downloading ? download?.phase === 'verifying' ? '校验中…' : '下载中…' : download?.phase === 'error' ? '继续下载' : '下载模型'}</button>{downloading && <div className="model-download-progress" role="status"><progress max="100" value={downloadPercent} aria-label="本地模型下载进度" /><span>{download?.phase === 'verifying' ? '正在检查文件完整性…' : `${downloadPercent}% · ${Math.round((download?.downloadedBytes ?? 0) / 1_000_000)} / ${Math.round((download?.totalBytes ?? 1_019_141_728) / 1_000_000)} MB`}</span></div>}{(installState === 'error' || download?.phase === 'error') && <p className="inline-error">{download?.error || '下载暂时中断，已下载的部分会保留。请检查网络后继续。'}</p>}</div>}
         <p className="settings-help">安装包只包含应用程序。本地模型按需下载，已下载的模型可重复使用。</p>
         {value.engine !== 'whisper' && sameEngine && installed && modelState !== 'ready' && <div className="prepare-model">{runtime.modelError && <p className="inline-error model-error-detail">{runtime.modelError}</p>}<div><span>{modelStoppedRunning(runtime.modelError) ? '已保存的录音不受影响，重新准备模型后可继续转写。' : '加载完成后即可开始录音。'}</span></div><button className="secondary-button" disabled={modelState === 'loading'} onClick={async () => { setPrepareState('loading'); const ok = await onPrepare(); setPrepareState(ok ? 'idle' : 'error'); }}>{modelState === 'loading' ? '正在准备…' : '准备模型'}</button></div>}
+        {runtime.platform === 'windows' && value.engine === 'qwen' && <label className="auto-polish-control gpu-control">
+          <span className="auto-polish-icon"><Cpu size={17} /></span>
+          <span><strong>显卡加速<span className="experimental-tag">实验</span></strong><small>用显卡（包括 Intel、AMD 核显）识别，通常更快。启动失败会自动改用 CPU；如果识别结果出现乱码，请关闭并反馈。</small></span>
+          <input type="checkbox" role="switch" checked={Boolean(value.gpuAcceleration)} disabled={saving} onChange={(event) => setValue({ ...value, gpuAcceleration: event.target.checked })} />
+        </label>}
         <details className="advanced-settings"><summary>模型文件与引擎路径</summary>{pathField('executable', '引擎程序', runtime.defaultExecutable || '选择识别引擎')}{pathField('modelPath', '模型文件', runtime.defaultModelPath || '选择模型文件')}{value.engine !== 'whisper' && pathField('mmprojPath', '音频投影文件', runtime.defaultMmprojPath || '选择投影文件')}</details>
       </>}
       <label className="form-field"><span>{cloud ? '语言提示' : '识别语言'}</span><select value={value.language} onChange={(event) => setValue({ ...value, language: event.target.value })}><option value="auto">自动检测</option><option value="en">英语</option><option value="zh">中文</option></select></label>
