@@ -48,7 +48,9 @@ $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $stderr = Join-Path $work 'server.err.log'; $stdout = Join-Path $work 'server.out.log'
 $arguments = @('-m',(Join-Path $ModelDir 'Qwen3-ASR-0.6B-Q8_0.gguf'),'--mmproj',(Join-Path $ModelDir 'mmproj-Qwen3-ASR-0.6B-Q8_0.gguf'),
     '--host','127.0.0.1','--port',"$port",'--no-webui','--jinja','-c','4096','-np','1','--cache-ram','0') +
-    $(if ($Device -eq 'gpu') { @('-ngl','99','--no-host','--fit','off') } else { @('-ngl','0','-dev','none','--no-mmproj-offload') })
+    $(if ($Device -eq 'gpu') { @('-ngl','99','--no-host','--fit','off') } else { @('-ngl','0','-dev','none','--no-mmproj-offload') }) +
+    # Layer placement and device buffers are only logged at verbosity 4.
+    @('-lv','4')
 $process = Start-Process -FilePath $server -ArgumentList ($arguments | ForEach-Object { '"{0}"' -f $_ }) -WorkingDirectory $work `
     -RedirectStandardError $stderr -RedirectStandardOutput $stdout -PassThru -NoNewWindow
 $headers = @{ Authorization = "Bearer $key" }
