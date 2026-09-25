@@ -68,11 +68,11 @@ mod job {
 /// The CPU run keeps the model and the audio encoder off every GPU backend.
 pub(crate) const fn qwen_device_args(gpu: bool) -> &'static [&'static str] {
     if gpu {
-        // Windows GPU backends share memory with the CPU on integrated graphics. Mapping the model
-        // file straight into such a buffer failed llama.cpp's 32-byte alignment check under Vulkan,
-        // so the weights are read in and uploaded instead.
+        // On Windows, Vulkan "pinned" host buffers are used as CPU memory, and llama.cpp aborts when a
+        // driver maps them at less than 32-byte alignment (Mesa's software device does). Integrated
+        // graphics share memory with the CPU anyway, so skipping them costs little.
         if cfg!(windows) {
-            &["-ngl", "99", "--load-mode", "none"]
+            &["-ngl", "99", "--no-host"]
         } else {
             &["-ngl", "99"]
         }
@@ -115,19 +115,16 @@ mod tests {
         let help = command(&server).arg("--help").output().expect("run llama-server --help");
         let help = String::from_utf8_lossy(&help.stdout).into_owned() + &String::from_utf8_lossy(&help.stderr);
         // Both platforms' placement flags, plus the ones Model::load always passes.
-        let fixed = ["--load-mode", "--mmproj", "--host", "--port", "--no-webui", "--jinja", "-c", "-np", "--cache-ram"];
+        let fixed = ["--no-host", "--mmproj", "--host", "--port", "--no-webui", "--jinja", "-c", "-np", "--cache-ram"];
         for flag in qwen_device_args(true).iter().chain(qwen_device_args(false)).chain(&fixed).filter(|arg| arg.starts_with('-')) {
             assert!(help.contains(flag), "llama-server does not know {flag}");
-        }
-        for mode in ["none"] {
-            assert!(help.contains(&format!("- {mode}:")), "llama-server has no load mode {mode}");
         }
     }
 
     #[test]
     fn cpu_fallback_keeps_every_part_of_the_model_off_the_gpu() {
         assert_eq!(&qwen_device_args(true)[..2], ["-ngl", "99"]);
-        assert_eq!(qwen_device_args(true).contains(&"--load-mode"), cfg!(windows));
+        assert_eq!(qwen_device_args(true).contains(&"--no-host"), cfg!(windows));
         let cpu = qwen_device_args(false);
         assert!(cpu.windows(2).any(|pair| pair == ["-ngl", "0"]));
         assert!(cpu.windows(2).any(|pair| pair == ["-dev", "none"]));
