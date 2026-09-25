@@ -5,7 +5,11 @@ param(
     [Parameter(Mandatory)][string]$NativeRoot,
     [Parameter(Mandatory)][string]$ModelDir,
     [string]$Report,
-    [ValidateRange(1,50)][int]$Iterations = 1
+    [ValidateRange(1,50)][int]$Iterations = 1,
+    # cpu: the flags the app falls back to. gpu: the app's default; -RequireVulkan then insists the
+    # Vulkan backend actually ran the model (CI uses Mesa's software Vulkan device for this).
+    [ValidateSet('cpu','gpu')][string]$Device = 'cpu',
+    [switch]$RequireVulkan
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -43,11 +47,14 @@ $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0); $liste
 $port = $listener.LocalEndpoint.Port; $listener.Stop()
 $stderr = Join-Path $work 'server.err.log'; $stdout = Join-Path $work 'server.out.log'
 $arguments = @('-m',(Join-Path $ModelDir 'Qwen3-ASR-0.6B-Q8_0.gguf'),'--mmproj',(Join-Path $ModelDir 'mmproj-Qwen3-ASR-0.6B-Q8_0.gguf'),
-    '--host','127.0.0.1','--port',"$port",'--no-webui','--jinja','-ngl','0','-c','4096','-np','1','--cache-ram','0')
+    '--host','127.0.0.1','--port',"$port",'--no-webui','--jinja','-c','4096','-np','1','--cache-ram','0') +
+    $(if ($Device -eq 'gpu') { @('-ngl','99','--no-host','--fit','off') } else { @('-ngl','0','-dev','none','--no-mmproj-offload') }) +
+    # Layer placement and device buffers are only logged at verbosity 4.
+    @('-lv','4')
 $process = Start-Process -FilePath $server -ArgumentList ($arguments | ForEach-Object { '"{0}"' -f $_ }) -WorkingDirectory $work `
     -RedirectStandardError $stderr -RedirectStandardOutput $stdout -PassThru -NoNewWindow
 $headers = @{ Authorization = "Bearer $key" }
-$result = [ordered]@{ checked_utc = [DateTime]::UtcNow.ToString('o'); expected = $phrase }
+$result = [ordered]@{ checked_utc = [DateTime]::UtcNow.ToString('o'); device = $Device; expected = $phrase }
 try {
     $healthy = $false
     $deadline = [DateTime]::UtcNow.AddSeconds(180)
@@ -83,6 +90,18 @@ try {
     foreach ($word in @('opportunity','cost','economics')) {
         if ($text -notmatch $word) { throw "Transcript is missing '$word'." }
     }
+    # llama-server prints the device list and layer placement on stdout, warnings on stderr.
+    $log = (Get-Content -Raw -LiteralPath $stderr) + "`n" + (Get-Content -Raw -LiteralPath $stdout -ErrorAction SilentlyContinue)
+    # Either the device list (older builds) or a model buffer placed on a Vulkan device.
+    $vulkan = [regex]::Matches($log, 'ggml_vulkan: \d+ = [^\r\n]+|Vulkan\d+ model buffer size[^\r\n]*') | ForEach-Object { $_.Value.Trim() }
+    $result.vulkan_devices = @($vulkan)
+    $offload = [regex]::Match($log, 'offloaded \d+/\d+ layers to GPU')
+    $result.gpu_layers = if ($offload.Success) { $offload.Value } else { $null }
+    if ($RequireVulkan) {
+        if (-not $vulkan) { Write-Host $log; throw 'The Vulkan backend found no device.' }
+        if (-not $offload.Success -or $offload.Value -match 'offloaded 0/') { Write-Host $log; throw 'The model was not offloaded to the Vulkan device.' }
+    }
+    if ($Device -eq 'cpu' -and $offload.Success -and $offload.Value -notmatch 'offloaded 0/') { throw "CPU mode offloaded layers: $($offload.Value)" }
     $result.status = 'passed'
 } finally {
     if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force; $process.WaitForExit() }

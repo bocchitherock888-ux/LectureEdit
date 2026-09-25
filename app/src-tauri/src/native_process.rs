@@ -63,8 +63,24 @@ mod job {
     }
 }
 
-pub(crate) const fn qwen_gpu_layers() -> &'static str {
-    if cfg!(windows) { "0" } else { "99" }
+/// llama-server placement flags. The GPU run offloads everything and lets llama.cpp pick the
+/// device (Metal on macOS; Vulkan on Windows when a driver provides it, otherwise the CPU).
+/// The CPU run keeps the model and the audio encoder off every GPU backend.
+pub(crate) const fn qwen_device_args(gpu: bool) -> &'static [&'static str] {
+    if gpu {
+        // On Windows, Vulkan "pinned" host buffers are used as CPU memory, and llama.cpp aborts when a
+        // driver maps one at less than 32-byte alignment. Mesa's software device does, at random,
+        // most often during the start-up memory fit, which makes many tiny allocations. The fit
+        // changes nothing here (context size and layers are set explicitly), so it is skipped, and
+        // weights avoid pinned buffers. Integrated graphics share memory with the CPU anyway.
+        if cfg!(windows) {
+            &["-ngl", "99", "--no-host", "--fit", "off"]
+        } else {
+            &["-ngl", "99"]
+        }
+    } else {
+        &["-ngl", "0", "-dev", "none", "--no-mmproj-offload"]
+    }
 }
 
 #[cfg(test)]
@@ -89,8 +105,31 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("lectureedit-pipe-ok"));
     }
 
+    /// Every flag the app passes must exist in the packaged llama-server: an unknown one makes
+    /// the GPU start fail and silently sends everyone to the CPU. Skipped when not yet built.
     #[test]
-    fn windows_release_uses_cpu_and_macos_keeps_its_acceleration_setting() {
-        assert_eq!(qwen_gpu_layers(), if cfg!(windows) { "0" } else { "99" });
+    fn the_packaged_server_accepts_every_placement_flag() {
+        let name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+        let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/native/qwen").join(name);
+        if !server.is_file() {
+            return;
+        }
+        let help = command(&server).arg("--help").output().expect("run llama-server --help");
+        let help = String::from_utf8_lossy(&help.stdout).into_owned() + &String::from_utf8_lossy(&help.stderr);
+        // Both platforms' placement flags, plus the ones Model::load always passes.
+        let fixed = ["--no-host", "--fit", "--mmproj", "--host", "--port", "--no-webui", "--jinja", "-c", "-np", "--cache-ram"];
+        for flag in qwen_device_args(true).iter().chain(qwen_device_args(false)).chain(&fixed).filter(|arg| arg.starts_with('-')) {
+            assert!(help.contains(flag), "llama-server does not know {flag}");
+        }
+    }
+
+    #[test]
+    fn cpu_fallback_keeps_every_part_of_the_model_off_the_gpu() {
+        assert_eq!(&qwen_device_args(true)[..2], ["-ngl", "99"]);
+        assert_eq!(qwen_device_args(true).contains(&"--no-host"), cfg!(windows));
+        let cpu = qwen_device_args(false);
+        assert!(cpu.windows(2).any(|pair| pair == ["-ngl", "0"]));
+        assert!(cpu.windows(2).any(|pair| pair == ["-dev", "none"]));
+        assert!(cpu.contains(&"--no-mmproj-offload"));
     }
 }

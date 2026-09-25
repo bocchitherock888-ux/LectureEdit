@@ -27,6 +27,13 @@ pub struct Settings {
     pub auto_polish: bool,
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Region of a cloud service that has several (阿里云百炼: "beijing" or "singapore").
+    #[serde(default)]
+    pub cloud_region: String,
+    /// Windows only: run the local model on the GPU through Vulkan. Experimental and off by
+    /// default until it has been tried on real integrated graphics; macOS always uses Metal.
+    #[serde(default)]
+    pub gpu_acceleration: bool,
 }
 
 fn default_theme() -> String {
@@ -183,6 +190,8 @@ impl Settings {
             && self.language == other.language
             && self.custom_vocabulary == other.custom_vocabulary
             && self.cloud_consent == other.cloud_consent
+            && self.cloud_region == other.cloud_region
+            && self.gpu_acceleration == other.gpu_acceleration
     }
 }
 
@@ -198,6 +207,8 @@ impl Default for Settings {
             cloud_consent: false,
             auto_polish: false,
             theme: default_theme(),
+            cloud_region: String::new(),
+            gpu_acceleration: false,
         }
     }
 }
@@ -1564,7 +1575,7 @@ pub fn validate_session(item: &Session) -> Result<(), String> {
             run.source.len() > MAX_TITLE_BYTES
                 || !matches!(
                     run.engine.as_str(),
-                    "qwen" | "qwen3-asr" | "whisper" | "soniox"
+                    "qwen" | "qwen3-asr" | "whisper" | "soniox" | "doubao" | "bailian" | "elevenlabs"
                 )
                 || run.state.len() > 128
                 || run.ended_at.is_some_and(|ended| ended < run.started_at)

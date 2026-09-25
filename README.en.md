@@ -25,7 +25,7 @@ When a lecturer's name is transcribed incorrectly, correct it while you remember
 
 ## Downloads and platforms
 
-The current version is **0.1.5 beta**.
+The current version is **0.1.6 beta**.
 
 | Platform | Status |
 |---|---|
@@ -93,18 +93,29 @@ Choose a light, dark or system-matched appearance, and collapse the course sideb
 
 Qwen3-ASR recognises speech on your computer by default. Once the model is ready, local transcription, manual editing, notes, search and export work offline. For a fully local workflow, select local recognition and keep cloud assistance switched off.
 
-Optional cloud tools use API keys that you provide. The following integrations are experimental, with live-service acceptance testing still pending:
+Optional cloud tools use API keys that you provide, one key per service. Settings include step-by-step instructions for getting each key.
+
+For cloud live transcription you can choose (prices as listed by each provider in September 2026):
+
+| Service | Model | Indicative price | Suited to |
+|---|---|---|---|
+| Doubao Speech (Volcano Engine) | Streaming ASR 2.0 | about ¥1 per hour | Chinese and mixed Chinese/English; first choice in mainland China |
+| Alibaba Cloud Model Studio (百炼) | Qwen-Audio 3.1 realtime | pay as you go, free quota for new users | Chinese and English hints, long term lists; Beijing or Singapore region |
+| ElevenLabs | Scribe v2 Realtime | about $0.39 per hour | outside China, English lectures |
+| Soniox | stt-rt-v5 | about $0.12 per hour | lowest price, outside China |
+
+Doubao, Model Studio and ElevenLabs follow each provider's current documentation and pass protocol-level tests, but have not yet been accepted against real accounts. Your vocabulary is sent to the chosen service as hotwords. If the connection drops or a provider ends a long session, the app reconnects and continues from the last finished sentence.
 
 | Tool | Purpose | Content sent to the provider |
 |---|---|---|
-| Soniox stt-rt-v5 | Cloud-based live speech recognition | Audio from recordings, imports or retries you actively start, together with configured vocabulary hints. |
+| Cloud live speech recognition | Transcribe while recording | Audio from recordings, imports or retries you actively start, together with configured vocabulary hints. |
 | DeepSeek light cleanup | Tidy obvious sentence breaks, isolated fillers, punctuation and capitalisation | Confirmed transcript paragraphs, sent automatically while enabled. |
 | DeepSeek selected-text translation | Translate selected text into Simplified Chinese or English, with the option to save it as a note | The text selected when you invoke translation. |
 | DeepSeek image-to-equation recognition | Generate editable LaTeX from an image, then review and save it as an equation | The image you choose to recognise. |
 
 Light cleanup retains the original recognition output and undoable correction history. Review translations and recognised equations before saving, particularly important terminology and mathematical expressions.
 
-With Soniox selected, the original audio is still saved locally. **暂停云端转写** (Pause cloud transcription) stops subsequent audio uploads while local recording continues. Pending work can be retried after the connection returns. WAV imports sent to Soniox are streamed at normal playback speed, so processing time depends on recording length.
+With a cloud service selected, the original audio is still saved locally. **暂停云端转写** (Pause cloud transcription) stops subsequent audio uploads while local recording continues. Pending work can be retried after the connection returns. WAV imports sent to a cloud service are streamed at normal playback speed, so processing time depends on recording length.
 
 Provider charges go to your own account. API keys use the operating system's credential store: Keychain on macOS and Credential Manager on Windows. Course packages and document exports exclude keys.
 

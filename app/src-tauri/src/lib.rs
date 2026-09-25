@@ -8,6 +8,10 @@ mod native_process;
 mod pdf;
 pub mod runtime;
 mod soniox;
+mod cloud;
+mod doubao;
+mod bailian;
+mod elevenlabs;
 pub mod store;
 use std::sync::Arc;
 use tauri::Manager;
@@ -78,6 +82,34 @@ async fn recognize_formula(
         .await
         .map_err(|_| "DeepSeek 公式识别任务意外中断".to_string())?
 }
+/// Pages people need while setting up a cloud service. Only these addresses can be opened, so
+/// the web view cannot be used to launch arbitrary programs or URLs.
+fn help_link(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "doubao-console" => "https://console.volcengine.com/speech/new/setting/apikeys",
+        "doubao-docs" => "https://www.volcengine.com/docs/6561/1354869",
+        "bailian-console-cn" => "https://bailian.console.aliyun.com/?tab=model#/api-key",
+        "bailian-console-intl" => "https://modelstudio.console.alibabacloud.com/?tab=model#/api-key",
+        "elevenlabs-console" => "https://elevenlabs.io/app/settings/api-keys",
+        "soniox-console" => "https://console.soniox.com",
+        _ => return None,
+    })
+}
+
+#[tauri::command]
+fn open_help_link(id: String) -> Result<(), String> {
+    let url = help_link(&id).ok_or("未知链接")?;
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("rundll32")
+        .args(["url.dll,FileProtocolHandler", url])
+        .spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open").arg(url).spawn();
+    result.map(|_| ()).map_err(|_| format!("无法打开浏览器，请手动访问 {url}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -106,6 +138,7 @@ pub fn run() {
             runtime_info,
             translate_text,
             recognize_formula,
+            open_help_link,
             pdf::export_pdf
         ])
         .build(tauri::generate_context!())

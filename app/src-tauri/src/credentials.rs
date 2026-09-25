@@ -2,6 +2,9 @@
 pub enum CredentialKind {
     Soniox,
     DeepSeek,
+    Doubao,
+    Bailian,
+    ElevenLabs,
 }
 
 impl CredentialKind {
@@ -9,6 +12,9 @@ impl CredentialKind {
         match self {
             Self::Soniox => "soniox-api-key",
             Self::DeepSeek => "deepseek-api-key",
+            Self::Doubao => "doubao-speech-api-key",
+            Self::Bailian => "bailian-api-key",
+            Self::ElevenLabs => "elevenlabs-api-key",
         }
     }
 }
@@ -68,10 +74,16 @@ mod tests {
     fn credential_accounts_are_stable_and_service_specific() {
         assert_eq!(CredentialKind::Soniox.account(), "soniox-api-key");
         assert_eq!(CredentialKind::DeepSeek.account(), "deepseek-api-key");
-        assert_ne!(
-            CredentialKind::Soniox.account(),
-            CredentialKind::DeepSeek.account()
-        );
+        let accounts = [
+            CredentialKind::Soniox,
+            CredentialKind::DeepSeek,
+            CredentialKind::Doubao,
+            CredentialKind::Bailian,
+            CredentialKind::ElevenLabs,
+        ]
+        .map(CredentialKind::account);
+        let unique: std::collections::HashSet<_> = accounts.iter().collect();
+        assert_eq!(unique.len(), accounts.len());
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

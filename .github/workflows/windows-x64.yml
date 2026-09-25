@@ -51,6 +51,16 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      # The SDK compiles the Vulkan GPU backend. Lavapipe is Mesa's software Vulkan device: the
+      # runner has no GPU, so it is how CI proves the packaged Vulkan backend really transcribes.
+      # Neither is packaged; users' GPU drivers provide Vulkan.
+      - name: Install the Vulkan SDK and a software Vulkan device
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa # v1.6.0
+        with:
+          vulkan_version: 1.4.357.0
+          install_runtime: true
+          install_lavapipe: true
+          cache: true
       - name: Cache fetched llama.cpp source
         uses: actions/cache@v4
         with:
@@ -59,8 +69,9 @@ jobs:
       # build-native.ps1 reuses these binaries only if their stamp matches the llama.cpp
       # commit and every CMake option; otherwise it rebuilds. The inference test below
       # still loads the packaged runtime and transcribes real speech on every run.
-      - name: Cache compiled llama.cpp runtime
-        uses: actions/cache@v4
+      - name: Restore compiled llama.cpp runtime
+        id: llama-bin
+        uses: actions/cache/restore@v4
         with:
           path: app/.native-build/windows-x64-${{ inputs.cpu_profile || 'multi' }}-msvc/bin/Release
           key: windows-x64-llama-bin-${{ inputs.cpu_profile || 'multi' }}-${{ hashFiles('app/scripts/build-native.ps1', 'app/scripts/windows/Windows-Common.ps1') }}
@@ -88,10 +99,44 @@ jobs:
           OFFLINE_WEBVIEW2: ${{ inputs.offline_webview2 || false }}
         run: |
           ./app/scripts/windows/Build-Windows.ps1 -CpuProfile $env:CPU_PROFILE -Jobs 2 -OfflineWebView2:($env:OFFLINE_WEBVIEW2 -eq 'true')
+      # Saved as soon as it is built, so a failing test later in the job does not throw away a
+      # 30-minute Vulkan compile.
+      - name: Save compiled llama.cpp runtime
+        if: ${{ always() && steps.llama-bin.outputs.cache-hit != 'true' && hashFiles(format('app/.native-build/windows-x64-{0}-msvc/bin/Release/llama-server.exe', inputs.cpu_profile || 'multi')) != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: app/.native-build/windows-x64-${{ inputs.cpu_profile || 'multi' }}-msvc/bin/Release
+          key: ${{ steps.llama-bin.outputs.cache-primary-key }}
       - name: Load the packaged model runtime and transcribe real speech
         run: |
           $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
           ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Report (Join-Path $output.FullName 'QWEN-INFERENCE.json')
+      - name: Transcribe real speech on the packaged Vulkan GPU backend
+        if: ${{ (inputs.cpu_profile || 'multi') == 'multi' }}
+        run: |
+          # Users get vulkan-1.dll from their GPU driver; the runner gets it from the SDK runtime.
+          $env:PATH = "$env:VULKAN_SDK\runtime\x64;$env:VULKAN_SDK\Bin;$env:PATH"
+          # llama.cpp skips CPU-type Vulkan devices unless named; lavapipe is one. Real users get
+          # the default: a dedicated GPU, otherwise the integrated one.
+          $env:GGML_VK_VISIBLE_DEVICES = '0'
+          $info = Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter 'vulkaninfo*.exe' | Select-Object -First 1
+          if ($info) { & $info.FullName --summary }
+          $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
+          # Mesa's software device maps memory at random alignments and llama.cpp aborts on some of
+          # them (real drivers must align to at least 64 bytes). Start-up is retried; once it comes
+          # up, the transcript must be right, which proves the Vulkan shaders compute correctly.
+          $crashes = 0
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+              ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Device gpu -RequireVulkan -Report (Join-Path $output.FullName 'QWEN-INFERENCE-vulkan.json')
+              Write-Host "Vulkan transcription passed on attempt $attempt after $crashes start-up crash(es) on the software device."
+              exit 0
+            } catch {
+              if ($_.Exception.Message -notmatch 'did not become healthy') { throw }
+              $crashes++
+            }
+          }
+          throw "llama-server never started on the software Vulkan device in 5 attempts."
       - name: Upgrade over LectureEdit 0.1.3 keeps course data
         env:
           GH_TOKEN: ${{ github.token }}

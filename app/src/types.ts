@@ -11,6 +11,10 @@ export interface Settings {
   cloudConsent?: boolean;
   autoPolish?: boolean;
   theme?: 'system' | 'light' | 'dark';
+  /** Region of a cloud service that has several (阿里云百炼: beijing or singapore). */
+  cloudRegion?: string;
+  /** Windows only: run the local model on the GPU (Vulkan). Experimental, off by default. */
+  gpuAcceleration?: boolean;
 }
 
 export interface Segment {
@@ -109,6 +113,8 @@ export interface RuntimeInfo {
   modelState?: 'unloaded' | 'loading' | 'ready' | 'error';
   modelError?: string | null;
   cloudKeyConfigured?: boolean;
+  /** Which cloud speech services have a saved key, by engine. */
+  cloudKeys?: Partial<Record<'doubao' | 'bailian' | 'elevenlabs' | 'soniox', boolean>>;
   deepseekKeyConfigured?: boolean;
   cloudProcessing?: boolean;
   cloudSessionId?: string | null;
@@ -147,6 +153,8 @@ export interface LectureAdapter {
   translateText(text: string, targetLanguage: 'zh' | 'en'): Promise<{ text: string }>;
   recognizeFormula(imageData: string): Promise<{ latex: string }>;
   pickFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null>;
+  /** Opens one of the known setup pages (a provider console) in the browser. */
+  openHelpLink(id: string, url: string): Promise<void>;
 }
 
 export const commandId = () => globalThis.crypto?.randomUUID?.() ?? `cmd-${Date.now()}-${Math.random().toString(16).slice(2)}`;

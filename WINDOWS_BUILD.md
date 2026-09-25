@@ -1,4 +1,4 @@
-# 随堂 0.1.5 · Windows x64 构建执行手册
+# 随堂 0.1.6 · Windows x64 构建执行手册
 
 日期：2026-09-20。输入为用户提供的 `LectureEdit-0.1.0-source.zip`。本目录已经包含修改后的完整源码。
 
@@ -13,10 +13,10 @@
 | Rust 目标 | `x86_64-pc-windows-msvc` |
 | Rust 工具链 | `1.92.0-x86_64-pc-windows-msvc`，沿用源项目记录的 Rust 版本 |
 | Node | 24.x x64；预检也接受 22.x 中的 22.12+ |
-| C++ | Visual Studio 2022，MSVC v143，Windows SDK，CMake |
+| C++ | Visual Studio 2022，MSVC v143，Windows SDK，CMake；`multi` 档另需 LunarG Vulkan SDK（编译显卡后端） |
 | 依赖安装 | `npm ci`；所有 Cargo 构建使用 `--locked` |
 | 安装格式 | NSIS `.exe`；当前用户安装；英文/简体中文安装界面 |
-| 本地推理 | 原项目固定 commit 的 llama.cpp；Qwen3-ASR-0.6B；CPU 构建 |
+| 本地推理 | 原项目固定 commit 的 llama.cpp；Qwen3-ASR-0.6B；CPU 后端加可选的 Vulkan 显卡后端 |
 | CPU 默认档 | `multi`，包含基础 x64 与优化 CPU 后端，由运行时选择 |
 | CPU 备用档 | `baseline`，明确关闭扩展指令集，单独标记产物 |
 | 系统声音 | 原项目 Rust WASAPI loopback 助手，单独编成 Windows x64 |
@@ -81,7 +81,7 @@ Suitang-windows-x64-multi-运行编号
 解压其中的最新构建目录，应看到：
 
 ```text
-Suitang_0.1.5_windows-x64_multi_setup.exe
+Suitang_0.1.6_windows-x64_multi_setup.exe
 BUILD-INFO.json
 BINARY-AUDIT.json
 native-audit.json
@@ -133,6 +133,8 @@ winget install --id Rustlang.Rustup --exact
 winget install --id Python.Python.3.12 --exact
 winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
+
+另从 LunarG 官网 https://vulkan.lunarg.com/sdk/home 安装 Windows 版 Vulkan SDK（CI 使用 1.4.357.0），安装后重开终端，使 `VULKAN_SDK` 环境变量生效。
 
 安装完成后关闭旧终端，重新打开 **PowerShell 7 x64（pwsh）**。若 VS 安装器要求重启，先完成重启。`winget` 缺失时使用各软件的官方安装器；具体链接见本手册“来源”。VS 安装器里选择 Desktop development with C++，包含 MSVC v143 x64/x86 和 Windows SDK。[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 
@@ -209,7 +211,7 @@ LectureEdit\app\src-tauri\target\x86_64-pc-windows-msvc\release\lectureedit.exe
 校验安装器：
 
 ```powershell
-Get-FileHash .\Suitang_0.1.5_windows-x64_multi_setup.exe -Algorithm SHA256
+Get-FileHash .\Suitang_0.1.6_windows-x64_multi_setup.exe -Algorithm SHA256
 ```
 
 与同目录 `SHA256SUMS.txt` 对照。哈希用于核对文件，数字签名用于验证发布者，两项应分别记录。NSIS 安装器的引导程序架构与安装进去的主程序架构可以不同；本包对实际 app、helper 和 DLL 检查 `0x8664`。
@@ -249,7 +251,7 @@ Get-FileHash .\Suitang_0.1.5_windows-x64_multi_setup.exe -Algorithm SHA256
 
 总下载量约 1.02 GB，来源是输入源码的固定清单；本次没有重新下载权重验证远端内容。首次使用需要完成应用内模型准备；已有文件可在设置中指定。模型安装完毕后，选择本地 Qwen 做断网识别测试。
 
-Windows 首包走 CPU；macOS 保留现有 Metal 配置。Windows 实际实时能力、发热和电池表现待硬件实测，不能从 Apple Silicon 表现推算。`multi` 提供 CPU 指令集适配；`baseline` 提供兼容性对照。CUDA/Vulkan 加速作为独立后续工作，当前保持原有接口和依赖稳定。
+`multi` 档随附 `ggml-vulkan.dll`。在设置中打开「显卡加速（实验）」（默认关闭）后，有 Vulkan 驱动的电脑（独立显卡，或 Intel/AMD 核显）用显卡推理，没有驱动时自动用 CPU。尚未在真实显卡上验收，因此默认关闭。应用若发现显卡后端启动失败或中途崩溃，会改用 CPU 并在本版本内记住。CI 在构建机上用 Mesa 的软件 Vulkan 设备实际转写一次，验证打包的显卡后端算得对；该软件设备的内存映射对齐不合规范，会随机导致 llama.cpp 启动失败，因此 CI 最多重试 5 次启动。显卡模式启动参数为 `-ngl 99 --no-host --fit off`。`baseline` 档只含 CPU，作兼容性对照。macOS 保留 Metal 配置。
 
 **原生精排 PDF 是现有源码的 macOS 专用实现。** 本次在 Windows 清楚标明该限制并禁用对应入口，提供“导出课程阅读 HTML → 在 Edge 打开 → 打印为 PDF”的流程；版式须实际核对。Markdown、HTML、WAV、课程包保留原实现，待 Windows 验收。处理 PDF 功能对齐应单列后续任务，避免与首个 Windows 构建同时改动导出架构。
 

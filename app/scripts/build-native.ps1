@@ -30,15 +30,21 @@ try {
     $options = @('-S',$source,'-B',$build,'-G','Visual Studio 17 2022','-A','x64','-T',$(if ($Toolset -eq 'clang') {'ClangCL,host=x64'} else {'host=x64'}),
         "-DCMAKE_GENERATOR_INSTANCE=$script:VisualStudioDir",'-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL',
         '-DGGML_NATIVE=OFF','-DGGML_OPENMP=OFF','-DGGML_CUDA=OFF','-DGGML_HIP=OFF',
-        '-DGGML_VULKAN=OFF','-DGGML_SYCL=OFF','-DGGML_OPENCL=OFF','-DGGML_BLAS=OFF','-DGGML_METAL=OFF',
+        '-DGGML_SYCL=OFF','-DGGML_OPENCL=OFF','-DGGML_BLAS=OFF','-DGGML_METAL=OFF',
         '-DLLAMA_OPENSSL=OFF','-DLLAMA_CURL=OFF','-DLLAMA_BUILD_UI=OFF','-DLLAMA_USE_PREBUILT_UI=OFF',
         '-DLLAMA_BUILD_SERVER=ON','-DLLAMA_BUILD_APP=OFF','-DLLAMA_BUILD_EXAMPLES=OFF',
         '-DLLAMA_BUILD_TESTS=OFF','-DLLAMA_BUILD_TOOLS=ON','-DBUILD_SHARED_LIBS=ON',
         '-DGGML_BACKEND_DIR=')
     if ($CpuProfile -eq 'multi') {
-        $options += @('-DGGML_BACKEND_DL=ON','-DGGML_CPU_ALL_VARIANTS=ON')
+        # ggml-vulkan.dll is loaded at run time like the CPU variants. On a computer without a
+        # Vulkan driver it simply fails to load and llama.cpp runs on the CPU; the app also falls
+        # back to the CPU and remembers it when the GPU backend crashes.
+        if (-not $env:VULKAN_SDK -or -not (Test-Path (Join-Path $env:VULKAN_SDK 'Bin\glslc.exe'))) {
+            throw 'Install the LunarG Vulkan SDK and open a new shell so VULKAN_SDK is set (needed to build the GPU backend).'
+        }
+        $options += @('-DGGML_BACKEND_DL=ON','-DGGML_CPU_ALL_VARIANTS=ON','-DGGML_VULKAN=ON')
     } else {
-        $options += @('-DGGML_BACKEND_DL=OFF','-DGGML_CPU_ALL_VARIANTS=OFF',
+        $options += @('-DGGML_VULKAN=OFF','-DGGML_BACKEND_DL=OFF','-DGGML_CPU_ALL_VARIANTS=OFF',
             '-DGGML_SSE42=OFF','-DGGML_AVX=OFF','-DGGML_AVX2=OFF','-DGGML_BMI2=OFF',
             '-DGGML_FMA=OFF','-DGGML_F16C=OFF','-DGGML_AVX512=OFF','-DGGML_AVX512_VBMI=OFF',
             '-DGGML_AVX512_VNNI=OFF','-DGGML_AVX512_BF16=OFF','-DGGML_AVX_VNNI=OFF',
@@ -54,10 +60,12 @@ try {
     } else {
         Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
         Invoke-Checked cmake.exe $options
-        Invoke-Checked cmake.exe @('--build',$build,'--config','Release','--target','llama-server','--parallel',"$Jobs")
+        $targets = @('llama-server') + $(if ($CpuProfile -eq 'multi') { @('ggml-vulkan') } else { @() })
+        Invoke-Checked cmake.exe (@('--build',$build,'--config','Release','--target') + $targets + @('--parallel',"$Jobs"))
         Set-Content -LiteralPath $stamp -Value $buildKey -NoNewline -Encoding utf8
     }
     if (-not (Test-Path (Join-Path $bin 'llama-server.exe') -PathType Leaf)) { throw "Expected server output in $bin" }
+    if ($CpuProfile -eq 'multi' -and -not (Test-Path (Join-Path $bin 'ggml-vulkan.dll') -PathType Leaf)) { throw "Expected the Vulkan backend in $bin" }
     # llama.cpp is split into several DLLs that pass C++ objects and FILE handles to one another.
     # They must share one CRT, so the build uses /MD and ships Microsoft's app-local VC++ runtime.
     $crt = Get-ChildItem -Path (Join-Path $script:VisualStudioDir 'VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT') -Directory |

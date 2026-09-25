@@ -20,7 +20,7 @@ const dllCheck = argumentsList.includes('--dll-check');
 const smoke = argumentsList.includes('--smoke');
 if ((dllCheck || smoke) && process.platform !== 'win32') throw new Error('--dll-check/--smoke requires real Windows');
 const required = ['lectureedit-loopback.exe','qwen/llama-server.exe'];
-if (profile === 'multi') required.push('qwen/ggml-cpu-x64.dll');
+if (profile === 'multi') required.push('qwen/ggml-cpu-x64.dll', 'qwen/ggml-vulkan.dll');
 for (const relative of required) if (!fs.statSync(path.join(root, relative), {throwIfNoEntry:false})?.isFile()) throw new Error(`Missing packaged native file ${relative}`);
 if (profile === 'multi' && !fs.readdirSync(path.join(root,'qwen')).some(name => /^ggml-cpu-(haswell|sandybridge|alderlake)\.dll$/i.test(name)))
   throw new Error('Multi-CPU build lacks an optimised CPU backend alongside the x64 baseline.');
@@ -46,6 +46,8 @@ for (const file of files) {
       const sibling = siblings.get(imported.toLowerCase());
       if (requiresSeparateMsvcRuntime(imported) && !sibling) throw new Error(`${file} requires ${imported}; package the app-local VC++ runtime beside it.`);
       if (sibling) dependencies.push({name:imported, from:'beside_binary'});
+      // The Vulkan loader ships with the GPU driver. Without it ggml-vulkan.dll just does not load.
+      else if (/^ggml-vulkan\.dll$/i.test(path.basename(file)) && imported.toLowerCase() === 'vulkan-1.dll') dependencies.push({name:imported, from:'gpu_driver_optional'});
       else if (isApiSet(imported)) dependencies.push({name:imported, from:'windows_api_contract'});
       else if (fs.existsSync(path.join(process.env.SystemRoot || 'C:\\Windows','System32',imported))) dependencies.push({name:imported, from:'windows_system32'});
       else throw new Error(`${file} imports missing ${imported}; package the matching x64 DLL, or correct the native build. Do not copy a DLL from an arbitrary website.`);

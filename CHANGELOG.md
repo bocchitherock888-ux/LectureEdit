@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 — 2026-09-26
+
+- Three more cloud speech services, each set up with a single API key: 豆包语音 (Volcano Engine streaming ASR 2.0, about ¥1 an hour), 阿里云百炼 (Qwen-Audio 3.1 real-time, Beijing or Singapore region) and ElevenLabs (Scribe v2 Realtime). Settings show each service's logo and price and how to get its key, with a link to its console. Course vocabulary is sent to the chosen service as hotwords. These follow each provider's current documentation and pass protocol tests against local servers; they have not yet been tried with real accounts
+- A dropped cloud connection, or a service ending a long session, now reconnects on its own and continues from the last finished sentence, catching up at twice real time. A refused key is reported and not retried
+- Windows: an experimental 显卡加速 switch in Settings, off by default, runs the local model on the GPU through Vulkan, including Intel and AMD integrated graphics. Without a Vulkan driver, or if the GPU backend fails to start or crashes during a lecture, the app uses the CPU and remembers that for this version. CI transcribes real speech on the packaged Vulkan backend using Mesa's software device; it has not yet been tried on real graphics hardware, hence off by default
+- Keys for each service are kept separately in the system keychain; removing one service's key no longer stops a lecture running on another
+
 ## 0.1.5 — 2026-09-25
 
 - The local model could get stuck repeating a word ("as, as, as, …") until it had written 1024 tokens. On a laptop without a graphics card that took 80–135 s, so the request timed out with "本地模型连接中断" and every sentence queued behind it was delayed by a minute or more. Each request is now limited by the length of its audio (at most 128 tokens for an 8-second segment), the model is steered away from repeating itself, and any word or phrase repeated four or more times in a row is kept once
