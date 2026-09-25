@@ -2616,6 +2616,8 @@ impl Archiver {
 }
 struct Model {
     settings: Value,
+    /// Whether llama-server was allowed to use a GPU backend.
+    gpu: bool,
     child: Arc<Mutex<Option<Child>>>,
     port: u16,
     key: String,
@@ -2915,10 +2917,26 @@ fn same_model_settings(left: &Value, right: &Value) -> bool {
 }
 const QWEN_SERVER_LOG: &str = "qwen-server.log";
 const MODEL_CONNECTION_LOST: &str = "本地模型连接中断；已保存的音频可重试转写";
+const SERVER_EXITED_EARLY: &str = "本地识别程序提前退出";
+const MODEL_LOAD_TIMEOUT: &str = "本地模型加载超时，已保存的音频可稍后继续转写";
+/// Written when the GPU backend failed on this computer. It names the app version, so a later
+/// release (with a newer llama.cpp or driver workarounds) tries the GPU again once.
+const QWEN_CPU_ONLY: &str = "qwen-cpu-only.txt";
+fn gpu_allowed(root: &Path) -> bool {
+    fs::read_to_string(root.join(QWEN_CPU_ONLY))
+        .map(|marker| marker.lines().next() != Some(env!("CARGO_PKG_VERSION")))
+        .unwrap_or(true)
+}
+fn remember_cpu_only(root: &Path, reason: &str) {
+    let _ = fs::write(
+        root.join(QWEN_CPU_ONLY),
+        format!("{}\n{reason}\n", env!("CARGO_PKG_VERSION")),
+    );
+}
 /// Names the exit code and the last error llama-server printed, so a user's screenshot is diagnosable.
 fn early_exit_message(code: Option<i32>, log_path: &Path) -> String {
     let log = fs::read_to_string(log_path).unwrap_or_default();
-    let mut message = "本地识别程序提前退出".to_owned();
+    let mut message = SERVER_EXITED_EARLY.to_owned();
     if let Some(code) = code {
         message.push_str(&format!("（代码 0x{:08X}）", code as u32));
     }
@@ -2954,11 +2972,52 @@ impl Model {
             .as_mut()
             .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
     }
+    /// Starts llama-server on the GPU unless this computer is known to need the CPU. A GPU start
+    /// that exits or never answers is retried once on the CPU, and the CPU is then remembered.
     fn load(
         settings: Value,
         root: &Path,
         child: Arc<Mutex<Option<Child>>>,
         exit: &AtomicBool,
+    ) -> Result<Self, String> {
+        if settings["engine"] == "whisper" || !gpu_allowed(root) {
+            return Self::load_on(settings, root, child, exit, false).map_err(|(error, _)| error);
+        }
+        match Self::load_on(settings.clone(), root, child.clone(), exit, true) {
+            Ok(model) => Ok(model),
+            Err((_, false)) | Err((_, true)) if exit.load(Ordering::SeqCst) => Err("应用正在退出".into()),
+            Err((error, false)) => Err(error),
+            Err((gpu_error, true)) => {
+                if let Some(mut stale) = child.lock().unwrap().take() {
+                    let _ = stale.kill();
+                    let _ = stale.wait();
+                }
+                remember_cpu_only(root, &gpu_error);
+                Self::load_on(settings, root, child, exit, false).map_err(|(error, _)| error)
+            }
+        }
+    }
+    /// The error's flag says whether llama-server itself failed after starting, which is the
+    /// case a different device can fix; missing files and settings are not.
+    fn load_on(
+        settings: Value,
+        root: &Path,
+        child: Arc<Mutex<Option<Child>>>,
+        exit: &AtomicBool,
+        gpu: bool,
+    ) -> Result<Self, (String, bool)> {
+        Self::start(settings, root, child, exit, gpu).map_err(|error| {
+            let server_failed =
+                error.starts_with(SERVER_EXITED_EARLY) || error == MODEL_LOAD_TIMEOUT;
+            (error, server_failed)
+        })
+    }
+    fn start(
+        settings: Value,
+        root: &Path,
+        child: Arc<Mutex<Option<Child>>>,
+        exit: &AtomicBool,
+        gpu: bool,
     ) -> Result<Self, String> {
         if exit.load(Ordering::SeqCst) {
             return Err("应用正在退出".into());
@@ -2980,6 +3039,7 @@ impl Model {
             port: 0,
             key: uid(),
             client,
+            gpu,
         };
         if loaded.settings["engine"] == "whisper" {
             return Ok(loaded);
@@ -3006,8 +3066,9 @@ impl Model {
             .args([
                 "--no-webui",
                 "--jinja",
-                "-ngl",
-                crate::native_process::qwen_gpu_layers(),
+            ])
+            .args(crate::native_process::qwen_device_args(gpu))
+            .args([
                 "-c",
                 "4096",
                 "-np",
@@ -3062,7 +3123,7 @@ impl Model {
             }
             thread::sleep(Duration::from_millis(200));
         }
-        Err("本地模型加载超时，已保存的音频可稍后继续转写".into())
+        Err(MODEL_LOAD_TIMEOUT.into())
     }
     fn transcribe(
         &mut self,
@@ -3646,6 +3707,11 @@ fn worker_loop(weak: Weak<Runtime>) {
                 // A job-level failure (deleted session, unreadable WAV, HTTP 5xx) leaves a healthy
                 // server; reloading ~1 GB of weights for it only stalls the queue.
                 if !model.as_ref().is_some_and(Model::server_alive) || e == MODEL_CONNECTION_LOST {
+                    // A GPU driver that crashes llama-server mid-lecture would crash it again on
+                    // every reload; the next load goes straight to the CPU instead.
+                    if model.as_ref().is_some_and(|m| m.gpu && !m.server_alive()) {
+                        remember_cpu_only(&runtime.root, &format!("stopped during transcription: {e}"));
+                    }
                     model = None;
                     *runtime.model_status.lock().unwrap() =
                         json!({"state":"error","settings":settings,"error":e});
@@ -3791,6 +3857,50 @@ mod tests {
         }));
         println!("TEXT {}", text.join(" "));
         drop(worker);
+    }
+    /// A llama-server that crashes whenever it may use the GPU, like a broken Vulkan driver.
+    #[cfg(unix)]
+    #[test]
+    fn a_gpu_that_fails_to_start_falls_back_to_the_cpu_and_is_remembered() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let server = temp.path().join("llama-server");
+        fs::write(&server, r#"#!/bin/sh
+echo "$*" >> "$(dirname "$0")/calls.log"
+case "$*" in *"-ngl 99"*) echo "ggml_vulkan: vk::Device::createComputePipeline: ErrorDeviceLost" >&2; exit 5;; esac
+while [ "$1" != "--port" ]; do shift; done
+exec python3 -c 'import http.server,sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self,*a): pass
+http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
+"#).unwrap();
+        fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+        for name in ["model.gguf", "mmproj.gguf"] {
+            fs::write(temp.path().join(name), b"stub").unwrap();
+        }
+        let settings = json!({"engine":"qwen","executable":server,"modelPath":temp.path().join("model.gguf"),"mmprojPath":temp.path().join("mmproj.gguf"),"language":"en"});
+        let exit = AtomicBool::new(false);
+        let child = Arc::new(Mutex::new(None));
+        let model = Model::load(settings.clone(), temp.path(), child.clone(), &exit).unwrap();
+        assert!(!model.gpu);
+        assert!(!gpu_allowed(temp.path()));
+        let marker = fs::read_to_string(temp.path().join(QWEN_CPU_ONLY)).unwrap();
+        assert!(marker.starts_with(env!("CARGO_PKG_VERSION")));
+        assert!(marker.contains("本地识别程序提前退出"));
+        drop(model);
+        let again = Model::load(settings, temp.path(), child, &exit).unwrap();
+        assert!(!again.gpu);
+        drop(again);
+        let calls = fs::read_to_string(temp.path().join("calls.log")).unwrap();
+        let calls: Vec<&str> = calls.lines().collect();
+        assert_eq!(calls.len(), 3, "GPU try, CPU retry, then CPU directly: {calls:?}");
+        assert!(calls[0].contains("-ngl 99"));
+        assert!(calls[1].contains("-ngl 0 -dev none --no-mmproj-offload"));
+        assert!(calls[2].contains("-ngl 0 -dev none --no-mmproj-offload"));
+        // A newer release tries the GPU again.
+        fs::write(temp.path().join(QWEN_CPU_ONLY), "0.0.1\nold\n").unwrap();
+        assert!(gpu_allowed(temp.path()));
     }
     use crate::soniox::Update;
     fn isolated_runtime(root: &Path) -> Arc<Runtime> {

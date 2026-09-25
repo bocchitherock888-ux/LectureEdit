@@ -63,8 +63,15 @@ mod job {
     }
 }
 
-pub(crate) const fn qwen_gpu_layers() -> &'static str {
-    if cfg!(windows) { "0" } else { "99" }
+/// llama-server placement flags. The GPU run offloads everything and lets llama.cpp pick the
+/// device (Metal on macOS; Vulkan on Windows when a driver provides it, otherwise the CPU).
+/// The CPU run keeps the model and the audio encoder off every GPU backend.
+pub(crate) const fn qwen_device_args(gpu: bool) -> &'static [&'static str] {
+    if gpu {
+        &["-ngl", "99"]
+    } else {
+        &["-ngl", "0", "-dev", "none", "--no-mmproj-offload"]
+    }
 }
 
 #[cfg(test)]
@@ -90,7 +97,11 @@ mod tests {
     }
 
     #[test]
-    fn windows_release_uses_cpu_and_macos_keeps_its_acceleration_setting() {
-        assert_eq!(qwen_gpu_layers(), if cfg!(windows) { "0" } else { "99" });
+    fn cpu_fallback_keeps_every_part_of_the_model_off_the_gpu() {
+        assert_eq!(qwen_device_args(true), ["-ngl", "99"]);
+        let cpu = qwen_device_args(false);
+        assert!(cpu.windows(2).any(|pair| pair == ["-ngl", "0"]));
+        assert!(cpu.windows(2).any(|pair| pair == ["-dev", "none"]));
+        assert!(cpu.contains(&"--no-mmproj-offload"));
     }
 }

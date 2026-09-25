@@ -51,6 +51,16 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      # The SDK compiles the Vulkan GPU backend. Lavapipe is Mesa's software Vulkan device: the
+      # runner has no GPU, so it is how CI proves the packaged Vulkan backend really transcribes.
+      # Neither is packaged; users' GPU drivers provide Vulkan.
+      - name: Install the Vulkan SDK and a software Vulkan device
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa # v1.6.0
+        with:
+          vulkan_version: 1.4.357.0
+          install_runtime: true
+          install_lavapipe: true
+          cache: true
       - name: Cache fetched llama.cpp source
         uses: actions/cache@v4
         with:
@@ -92,6 +102,15 @@ jobs:
         run: |
           $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
           ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Report (Join-Path $output.FullName 'QWEN-INFERENCE.json')
+      - name: Transcribe real speech on the packaged Vulkan GPU backend
+        if: ${{ (inputs.cpu_profile || 'multi') == 'multi' }}
+        run: |
+          # Users get vulkan-1.dll from their GPU driver; the runner gets it from the SDK runtime.
+          $env:PATH = "$env:VULKAN_SDK\runtime\x64;$env:VULKAN_SDK\Bin;$env:PATH"
+          $info = Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter 'vulkaninfo*.exe' | Select-Object -First 1
+          if ($info) { & $info.FullName --summary }
+          $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
+          ./app/scripts/windows/Test-QwenInference.ps1 -NativeRoot app/src-tauri/resources/native -ModelDir "$env:RUNNER_TEMP\Qwen 模型" -Device gpu -RequireVulkan -Report (Join-Path $output.FullName 'QWEN-INFERENCE-vulkan.json')
       - name: Upgrade over LectureEdit 0.1.3 keeps course data
         env:
           GH_TOKEN: ${{ github.token }}
