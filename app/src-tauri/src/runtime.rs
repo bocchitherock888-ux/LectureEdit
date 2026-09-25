@@ -3135,7 +3135,10 @@ impl Model {
             messages.push(json!({"role":"system","content":context}));
         }
         messages.push(json!({"role":"user","content":[{"type":"input_audio","input_audio":{"data":STANDARD.encode(wav),"format":"wav"}}]}));
-        let mut payload = json!({"model":self.settings["modelPath"],"messages":messages,"stream":false,"temperature":0,"max_tokens":1024});
+        // DRY penalises extending a sequence the output already repeated, which breaks a greedy
+        // "as, as, as, …" loop within a few words; ordinary transcripts, including spoken repeats
+        // such as "这个这个", came out unchanged in English and Chinese tests.
+        let mut payload = json!({"model":self.settings["modelPath"],"messages":messages,"stream":false,"temperature":0,"max_tokens":qwen_token_budget(wav.len()),"dry_multiplier":0.8,"dry_base":1.75,"dry_allowed_length":2,"dry_penalty_last_n":256});
         // Qwen's official forced-language protocol appends this assistant prefix.
         let language = match self.settings["language"].as_str() {
             Some("en") => Some("English"),
@@ -3173,8 +3176,67 @@ impl Model {
         let raw = value["choices"][0]["message"]["content"]
             .as_str()
             .ok_or("本地模型响应格式无效")?;
-        Ok(parse_qwen(raw))
+        Ok(collapse_repetition(&parse_qwen(raw)))
     }
+}
+/// Speech runs at most ~6 tokens a second in English or Chinese; twice that plus the language tag
+/// leaves room for fast speakers. Greedy decoding can fall into a loop ("as, as, as, …"); an
+/// open-ended budget let one loop run for 1024 tokens, which on a CPU took long enough to time
+/// out and stall every segment queued behind it.
+fn qwen_token_budget(wav_bytes: usize) -> u64 {
+    let seconds = wav_bytes.saturating_sub(44) as f64 / 32_000.0;
+    ((seconds * 12.0).ceil() as u64 + 32).clamp(48, 256)
+}
+/// A unit of one to eight words (or CJK characters) repeated four or more times in a row is a
+/// decoding loop, not speech; it is kept once. Three repeats ("very, very, very") are left alone.
+fn collapse_repetition(text: &str) -> String {
+    const MIN_REPEATS: usize = 4;
+    const MAX_UNIT: usize = 8;
+    let cjk = |c: char| ('\u{3400}'..='\u{9fff}').contains(&c) || ('\u{3040}'..='\u{30ff}').contains(&c) || ('\u{ac00}'..='\u{d7af}').contains(&c);
+    let letters = text.chars().filter(|c| c.is_alphanumeric()).count();
+    let by_char = letters > 0 && text.chars().filter(|c| cjk(*c)).count() * 2 > letters;
+    let tokens: Vec<String> = if by_char {
+        text.chars().filter(|c| !c.is_whitespace()).map(String::from).collect()
+    } else {
+        text.split_whitespace().map(str::to_owned).collect()
+    };
+    let key = |token: &String| -> String {
+        token.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
+    };
+    let keys: Vec<String> = tokens.iter().map(key).collect();
+    let mut kept: Vec<&str> = Vec::with_capacity(tokens.len());
+    let mut collapsed = false;
+    let mut i = 0;
+    while i < tokens.len() {
+        let mut skipped = false;
+        for unit in 1..=MAX_UNIT {
+            if i + unit * MIN_REPEATS > tokens.len() || keys[i..i + unit].iter().all(String::is_empty) {
+                continue;
+            }
+            let mut repeats = 1;
+            while i + (repeats + 1) * unit <= tokens.len()
+                && keys[i + repeats * unit..i + (repeats + 1) * unit] == keys[i..i + unit]
+            {
+                repeats += 1;
+            }
+            if repeats >= MIN_REPEATS {
+                kept.extend(tokens[i..i + unit].iter().map(String::as_str));
+                i += repeats * unit;
+                collapsed = true;
+                skipped = true;
+                break;
+            }
+        }
+        if !skipped {
+            kept.push(&tokens[i]);
+            i += 1;
+        }
+    }
+    if !collapsed {
+        return text.to_owned();
+    }
+    let joined = kept.join(if by_char { "" } else { " " });
+    joined.trim_end_matches([',', '，', '、', ' ']).to_owned()
 }
 fn parse_qwen(raw: &str) -> String {
     let text = raw.trim();
@@ -3355,8 +3417,14 @@ fn settle_local_inference(session: &mut Value, failed: usize) {
         session["error"] = json!("检测到音频缺口，已保留时间位置和缺口记录");
     }
 }
+/// Seconds of model time per second of audio above which live previews are dropped. A preview
+/// re-reads the whole growing segment every 2 s, so on a slow CPU previews alone outrun real time
+/// and final text falls further and further behind the lecture.
+const PREVIEW_PACE_LIMIT: f64 = 0.5;
 fn worker_loop(weak: Weak<Runtime>) {
     let mut model: Option<Model> = None;
+    // Smoothed model seconds per audio second; 0 until the first measurement.
+    let mut pace = 0.0f64;
     let mut attempted_settings = Value::Null;
     loop {
         let Some(runtime) = weak.upgrade() else {
@@ -3424,6 +3492,10 @@ fn worker_loop(weak: Weak<Runtime>) {
             j
         } else {
             let mut p = runtime.partial.lock().unwrap();
+            if pace > PREVIEW_PACE_LIMIT {
+                // Finals still arrive every few seconds; skipping previews keeps them on time.
+                p.retain(|_, job| runtime.job_is_cloud(job).unwrap_or(false));
+            }
             if let Some(key) = p
                 .iter()
                 .find(|(_, job)| !runtime.job_is_cloud(job).unwrap_or(false))
@@ -3486,10 +3558,17 @@ fn worker_loop(weak: Weak<Runtime>) {
             }
             let wav = runtime.wav(&job)?;
             let text = if has_speech(&wav[44..]) {
-                model
+                let started = Instant::now();
+                let text = model
                     .as_mut()
                     .unwrap()
-                    .transcribe(&wav, &runtime.root, &request_settings)?
+                    .transcribe(&wav, &runtime.root, &request_settings)?;
+                let seconds = (wav.len() - 44) as f64 / 32_000.0;
+                if seconds >= 1.0 {
+                    let rate = started.elapsed().as_secs_f64() / seconds;
+                    pace = if pace == 0.0 { rate } else { pace * 0.7 + rate * 0.3 };
+                }
+                text
             } else {
                 String::new()
             };
@@ -3609,6 +3688,109 @@ mod tests {
         assert!(message.ends_with(&log.display().to_string()));
         let missing = early_exit_message(None, &temp.path().join("absent.log"));
         assert!(missing.contains("请检查模型与程序是否匹配"));
+    }
+    /// Plays a 16 kHz mono WAV through recording, segmenting and the local model at real-time
+    /// speed and reports how long each final sentence took to appear after it was spoken.
+    /// QWEN_SERVER, QWEN_MODEL, QWEN_MMPROJ and LAG_WAV name the files; run with --ignored --nocapture.
+    #[test]
+    #[ignore = "needs the local Qwen model and a recording"]
+    fn live_transcript_lag_on_the_real_model() {
+        let var = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+        let wav = fs::read(var("LAG_WAV")).unwrap();
+        let data = wav.windows(4).position(|w| w == b"data").expect("WAV data chunk") + 8;
+        let samples: Vec<f32> = wav[data..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+            .collect();
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        runtime
+            .store
+            .lock()
+            .unwrap()
+            .mutate(|state| {
+                state.settings.engine = "qwen".into();
+                state.settings.executable = var("QWEN_SERVER");
+                state.settings.model_path = var("QWEN_MODEL");
+                state.settings.mmproj_path = var("QWEN_MMPROJ");
+                state.settings.language = "en".into();
+                Ok(())
+            })
+            .unwrap();
+        let sid = runtime
+            .dispatch(json!({"type":"createSession","commandId":uid(),"title":"lag","mode":"live"}))
+            .unwrap()
+            .selected_session_id
+            .unwrap();
+        let rid = runtime.add_run(&sid, "microphone").unwrap();
+        let weak = Arc::downgrade(&runtime);
+        let worker = thread::spawn(move || worker_loop(weak));
+        // Let the model load before the lecture starts, as it does when a user presses record.
+        let loaded = Instant::now();
+        while runtime.model_status.lock().unwrap()["state"] != "ready" && loaded.elapsed() < Duration::from_secs(120) {
+            let _ = runtime.enqueue(Job { id: "warm".into(), session: sid.clone(), run: rid.clone(), start: 0, end: 0, final_result: false, attempts: 0, failed: false });
+            thread::sleep(Duration::from_millis(200));
+        }
+        let mut archiver = Archiver::new(runtime.clone(), sid.clone(), rid.clone(), 16000).unwrap();
+        let started = Instant::now();
+        let mut seen: BTreeMap<String, f64> = BTreeMap::new();
+        let mut lags: Vec<f64> = Vec::new();
+        let mut previews = 0usize;
+        let mut last_preview_text = String::new();
+        let mut observe = |runtime: &Arc<Runtime>, lags: &mut Vec<f64>, previews: &mut usize| {
+            let now = started.elapsed().as_secs_f64();
+            let session = runtime.session(&sid).unwrap();
+            for segment in session["segments"].as_array().into_iter().flatten() {
+                let id = segment["id"].as_str().unwrap_or_default().to_owned();
+                if segment["final"] == true && !seen.contains_key(&id) {
+                    let spoken = segment["endSample"].as_u64().unwrap_or(0) as f64 / 16000.0;
+                    seen.insert(id, now);
+                    lags.push(now - spoken);
+                } else if segment["final"] != true {
+                    let text = segment["machineText"].as_str().unwrap_or_default().to_owned();
+                    if text != last_preview_text {
+                        last_preview_text = text;
+                        *previews += 1;
+                    }
+                }
+            }
+        };
+        for (index, chunk) in samples.chunks(1600).enumerate() {
+            let due = Duration::from_millis(index as u64 * 100);
+            if let Some(wait) = due.checked_sub(started.elapsed()) {
+                thread::sleep(wait);
+            }
+            archiver.frame(capture::Frame { start: (index * 1600) as u64, samples: chunk.to_vec() }).unwrap();
+            if index % 2 == 0 {
+                observe(&runtime, &mut lags, &mut previews);
+            }
+        }
+        archiver.finish().unwrap();
+        let audio_end = started.elapsed().as_secs_f64();
+        while runtime.jobs().unwrap().iter().any(|job| !job.failed) && started.elapsed().as_secs_f64() < audio_end + 600.0 {
+            observe(&runtime, &mut lags, &mut previews);
+            thread::sleep(Duration::from_millis(100));
+        }
+        thread::sleep(Duration::from_millis(300));
+        observe(&runtime, &mut lags, &mut previews);
+        let done = started.elapsed().as_secs_f64();
+        runtime.exit.store(true, Ordering::SeqCst);
+        drop(runtime.model_child.lock().unwrap().take().map(|mut child| child.kill()));
+        let session = runtime.session(&sid).unwrap();
+        let text: Vec<String> = session["segments"].as_array().into_iter().flatten().map(|s| s["machineText"].as_str().unwrap_or_default().to_owned()).collect();
+        let mut sorted = lags.clone();
+        sorted.sort_by(f64::total_cmp);
+        let pick = |q: f64| sorted.get(((sorted.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(0.0);
+        println!("LAG {}", json!({
+            "audio_seconds": samples.len() as f64 / 16000.0,
+            "finals": lags.len(),
+            "preview_updates": previews,
+            "lag_p50": pick(0.5), "lag_p90": pick(0.9), "lag_max": pick(1.0),
+            "drain_after_audio_end": done - audio_end,
+            "errors": session["error"],
+        }));
+        println!("TEXT {}", text.join(" "));
+        drop(worker);
     }
     use crate::soniox::Update;
     fn isolated_runtime(root: &Path) -> Arc<Runtime> {
@@ -4367,6 +4549,23 @@ mod tests {
         assert_eq!(parse_qwen("language English<asr_text>Hello"), "Hello");
         assert_eq!(parse_qwen("<asr_text>你好"), "你好");
         assert_eq!(parse_qwen("Plain text"), "Plain text");
+    }
+    #[test]
+    fn decoding_loops_collapse_but_real_repeats_stay() {
+        let looped = format!("That your measure is accurate, right? As, {}", "as, ".repeat(300));
+        assert_eq!(collapse_repetition(&looped), "That your measure is accurate, right? As");
+        assert_eq!(collapse_repetition("It is very, very, very important."), "It is very, very, very important.");
+        assert_eq!(collapse_repetition("thank you thank you thank you thank you thank you so much"), "thank you so much");
+        assert_eq!(collapse_repetition("这个这个这个这个这个问题很重要"), "这个问题很重要");
+        assert_eq!(collapse_repetition("我们来看第一个问题。"), "我们来看第一个问题。");
+        assert_eq!(collapse_repetition("GDP grew 2 2 2 percent"), "GDP grew 2 2 2 percent");
+        assert_eq!(collapse_repetition(""), "");
+    }
+    #[test]
+    fn token_budget_follows_audio_length() {
+        assert_eq!(qwen_token_budget(44), 48);
+        assert_eq!(qwen_token_budget(44 + 8 * 32_000), 128);
+        assert_eq!(qwen_token_budget(44 + 60 * 32_000), 256);
     }
     #[test]
     fn wav_header() {

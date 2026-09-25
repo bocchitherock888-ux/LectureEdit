@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 — 2026-09-25
+
+- The local model could get stuck repeating a word ("as, as, as, …") until it had written 1024 tokens. On a laptop without a graphics card that took 80–135 s, so the request timed out with "本地模型连接中断" and every sentence queued behind it was delayed by a minute or more. Each request is now limited by the length of its audio (at most 128 tokens for an 8-second segment), the model is steered away from repeating itself, and any word or phrase repeated four or more times in a row is kept once
+- On slow computers the live preview, which re-reads the sentence being spoken every 2 seconds, is switched off automatically when it would delay the finished text; each sentence still appears as soon as it is transcribed. On a simulated laptop CPU the median wait for finished text fell from 10.3 s to 7.2 s, with the same accuracy
+
 ## 0.1.4 — 2026-09-24
 
 - The app is now called 随堂 (Suitang). Courses, recordings, models and saved API keys stay where they were. On Windows the new installer removes the old LectureEdit install; on Mac, delete the old LectureEdit app after installing
