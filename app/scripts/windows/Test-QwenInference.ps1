@@ -88,8 +88,10 @@ try {
     foreach ($word in @('opportunity','cost','economics')) {
         if ($text -notmatch $word) { throw "Transcript is missing '$word'." }
     }
-    $log = Get-Content -Raw -LiteralPath $stderr
-    $vulkan = [regex]::Matches($log, 'ggml_vulkan: \d+ = [^\r\n]+') | ForEach-Object { $_.Value }
+    # llama-server prints the device list and layer placement on stdout, warnings on stderr.
+    $log = (Get-Content -Raw -LiteralPath $stderr) + "`n" + (Get-Content -Raw -LiteralPath $stdout -ErrorAction SilentlyContinue)
+    # Either the device list (older builds) or a model buffer placed on a Vulkan device.
+    $vulkan = [regex]::Matches($log, 'ggml_vulkan: \d+ = [^\r\n]+|Vulkan\d+ model buffer size[^\r\n]*') | ForEach-Object { $_.Value.Trim() }
     $result.vulkan_devices = @($vulkan)
     $offload = [regex]::Match($log, 'offloaded \d+/\d+ layers to GPU')
     $result.gpu_layers = if ($offload.Success) { $offload.Value } else { $null }
