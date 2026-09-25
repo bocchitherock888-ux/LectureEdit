@@ -4363,6 +4363,27 @@ http.server.HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()' "$2"
         assert!(runtime.dispatch(json!({"type":"configureCloudKey","provider":"nope","apiKey":"k"})).is_err());
     }
     #[test]
+    fn the_selected_service_region_and_vocabulary_reach_its_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = isolated_runtime(temp.path());
+        let sid = session(&runtime, "region");
+        runtime.dispatch(json!({"type":"configureCloudKey","provider":"bailian","apiKey":"sk-abc"})).unwrap();
+        let mut settings = runtime.snapshot().unwrap().settings;
+        settings.engine = "bailian".into();
+        settings.cloud_consent = true;
+        settings.cloud_region = "singapore".into();
+        settings.language = "zh".into();
+        settings.custom_vocabulary = vec!["con yard → Cournot".into(), "Tocqueville".into()];
+        runtime.dispatch(json!({"type":"settings","commandId":uid(),"settings":settings})).unwrap();
+        assert_eq!(runtime.snapshot().unwrap().settings.cloud_region, "singapore");
+        let (provider, config) = runtime.cloud_configuration(&sid).unwrap();
+        assert_eq!(provider, Provider::Bailian);
+        assert_eq!(config, crate::cloud::Config { key: "sk-abc".into(), language: "zh".into(), terms: vec!["Cournot".into(), "Tocqueville".into()], region: "singapore".into() });
+        assert_eq!(runtime.info()["modelReady"], true);
+        let secret_free = serde_json::to_string(&runtime.snapshot().unwrap()).unwrap();
+        assert!(!secret_free.contains("sk-abc"));
+    }
+    #[test]
     fn run_engine_pins_worker_routing() {
         let temp = tempfile::tempdir().unwrap();
         let runtime = isolated_runtime(temp.path());
