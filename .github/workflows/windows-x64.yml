@@ -107,6 +107,9 @@ jobs:
         run: |
           # Users get vulkan-1.dll from their GPU driver; the runner gets it from the SDK runtime.
           $env:PATH = "$env:VULKAN_SDK\runtime\x64;$env:VULKAN_SDK\Bin;$env:PATH"
+          # llama.cpp skips CPU-type Vulkan devices unless named; lavapipe is one. Real users get
+          # the default: a dedicated GPU, otherwise the integrated one.
+          $env:GGML_VK_VISIBLE_DEVICES = '0'
           $info = Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter 'vulkaninfo*.exe' | Select-Object -First 1
           if ($info) { & $info.FullName --summary }
           $output = Get-ChildItem .windows-output -Directory | Sort-Object Name | Select-Object -Last 1
