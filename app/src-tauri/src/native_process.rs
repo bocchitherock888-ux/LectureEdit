@@ -69,10 +69,12 @@ mod job {
 pub(crate) const fn qwen_device_args(gpu: bool) -> &'static [&'static str] {
     if gpu {
         // On Windows, Vulkan "pinned" host buffers are used as CPU memory, and llama.cpp aborts when a
-        // driver maps them at less than 32-byte alignment (Mesa's software device does). Integrated
-        // graphics share memory with the CPU anyway, so skipping them costs little.
+        // driver maps one at less than 32-byte alignment. Mesa's software device does, at random,
+        // most often during the start-up memory fit, which makes many tiny allocations. The fit
+        // changes nothing here (context size and layers are set explicitly), so it is skipped, and
+        // weights avoid pinned buffers. Integrated graphics share memory with the CPU anyway.
         if cfg!(windows) {
-            &["-ngl", "99", "--no-host"]
+            &["-ngl", "99", "--no-host", "--fit", "off"]
         } else {
             &["-ngl", "99"]
         }
@@ -115,7 +117,7 @@ mod tests {
         let help = command(&server).arg("--help").output().expect("run llama-server --help");
         let help = String::from_utf8_lossy(&help.stdout).into_owned() + &String::from_utf8_lossy(&help.stderr);
         // Both platforms' placement flags, plus the ones Model::load always passes.
-        let fixed = ["--no-host", "--mmproj", "--host", "--port", "--no-webui", "--jinja", "-c", "-np", "--cache-ram"];
+        let fixed = ["--no-host", "--fit", "--mmproj", "--host", "--port", "--no-webui", "--jinja", "-c", "-np", "--cache-ram"];
         for flag in qwen_device_args(true).iter().chain(qwen_device_args(false)).chain(&fixed).filter(|arg| arg.starts_with('-')) {
             assert!(help.contains(flag), "llama-server does not know {flag}");
         }
